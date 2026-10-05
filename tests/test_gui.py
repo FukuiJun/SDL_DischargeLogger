@@ -660,12 +660,19 @@ def test_sound_alert_on_comm_lost_and_silent_on_manual_stop(make_app, fake, dial
     app.onoff_btn.invoke()  # ［ON/OFF］で止めたときは鳴らさない
     assert pump(app.root, lambda: app.state == "done")
     assert started == []
-    app.csv_btn.invoke()
-    assert pump(app.root, lambda: not app._saving and not app.pending)
-    start(app)
-    fake.stop()  # 通信断で止まったら警告の音
-    assert pump(app.root, lambda: app.state == "done", timeout=30)
-    assert [a.kind for a in started] == ["alert"] and started[0].stopped
+    # 通信断・エラーで止まったとき、負荷 OFF を確認できなかったときは警告の音
+    # （実際に通信断にすると Windows では再接続 10 回に 30 秒以上かかるので、選ぶ処理を直接確かめる）
+    import recorder
+    from session import SessionResult
+
+    app._start_alarm(SessionResult(end_reason=recorder.END_REASON_COMM_LOST), True)
+    app._start_alarm(SessionResult(end_reason=recorder.END_REASON_ERROR), False)
+    app._start_alarm(SessionResult(end_reason=recorder.END_REASON_MANUAL), True)
+    app._start_alarm(SessionResult(end_reason=recorder.END_REASON_CUTOFF), True)
+    assert [a.kind for a in started] == ["alert", "alert", "alert", "alert"]
+    assert all(a.stopped for a in started[:-1])  # 新しく鳴らすときは前の音を止める
+    app._stop_alarm()
+    assert started[-1].stopped
 
 
 def test_no_sound_when_unchecked(make_app, fake, dialogs, tmp_path, monkeypatch):
