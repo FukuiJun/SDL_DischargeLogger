@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| バージョン | 0.7 |
+| バージョン | 0.8 |
 | 作成日 / 更新日 | 2026-10-01 / 2026-10-05 |
 | ステータス | ドラフト（v1.0.6 の実装に合わせて更新） |
 
@@ -22,7 +22,7 @@
 - ［ON/OFF］で放電の開始・停止、［CSV保存］で保存（停止しただけでは保存しない。保存しないデータは破棄を確認する）
 - 放電 1 回分の出力を 1 つのフォルダ（`<YYYYMMDD_HHMM>_SDL`）にまとめる
 - グラフの PNG 保存
-- PyInstaller で単一 exe にする
+- PyInstaller で exe にする（フォルダ形式で配布）
 
 ### やらないこと（明示的に対象外）
 - NI-VISA / USB / RS-232 での接続
@@ -47,7 +47,7 @@
 | OS | Windows 11 (64bit) | |
 | 言語・バージョン | Python 3.12 以上（開発時） | 実行 PC には Python 不要 |
 | 主要ライブラリ | tkinter（標準）、matplotlib | 追加ライブラリは要相談（Q-07） |
-| 配布形態 | PyInstaller による単一 exe（`--onefile --windowed`）`SDL_DischargeLogger.exe` | GitHub Actions（windows-latest）でビルド・テストし、Release に zip で添付 |
+| 配布形態 | PyInstaller のフォルダ形式（`--onedir --windowed`）。`SDL_DischargeLogger/` フォルダに `SDL_DischargeLogger.exe` と `_internal/` | 起動のたびに中身を展開する `--onefile` は起動が遅いため使わない（v1.0.9 から）。GitHub Actions（windows-latest）でビルド・テストし、Release に zip（展開するとフォルダ）で添付 |
 | 表示 | Windows の表示スケール（125%・150% など）に合わせてくっきり表示する（DPI 対応） | |
 | その他制約 | NI-VISA 等のドライバをインストールしない。通信は Python 標準の `socket` のみ | |
 
@@ -327,7 +327,7 @@ SDL_DischargeLogger/        # リポジトリ直下
 ├─ requirements.txt
 └─ README.md             # 使い方・ネットワーク設定手順・ビルド手順
 ```
-成果物: `dist/SDL_DischargeLogger.exe`。リリースは GitHub Releases に `SDL_DischargeLogger-v<版>.zip`（題名 `SDL_DischargeLogger v<版>`）
+成果物: `dist/SDL_DischargeLogger/`（`SDL_DischargeLogger.exe` と `_internal/`。フォルダごと配布する）。リリースは GitHub Releases に `SDL_DischargeLogger-v<版>.zip`（題名 `SDL_DischargeLogger v<版>`）
 
 ## 11. 受け入れ基準
 | ID | 基準 | 検証方法 | 対応機能 |
@@ -398,3 +398,4 @@ SDL_DischargeLogger/        # リポジトリ直下
 | 0.5 | 2026-10-02 | 放電電流・終止電圧の初期値を 0.400 A / 3.500 V に。放電電流 2A 以上・終止電圧 3.0V 以下で開始するときの確認を追加（F-02, F-03, AC-16）。保存先の初期値を exe と同じフォルダに（5.2） |
 | 0.6 | 2026-10-05 | F-11 オプションを追加（測定中は画面を消さない・ロックしない／放電が終わったら音で知らせる／Von を終止電圧 − 0.1 V に自動設定）。Von の SCPI を 5.1 に追加。Q-01 を仮定に。AC-17 を追加 |
 | 0.7 | 2026-10-05 | 番号（任意）の入力欄を追加。ファイル名の末尾に `_no<番号>`、CSV の試験情報に「番号」行（5.2, F-02） |
+| 0.8 | 2026-10-05 | 起動を速くするため、配布形態を exe 1 つ（`--onefile`）からフォルダ形式（`--onedir`）に変更（4 章、10 章） |

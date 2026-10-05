@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # パッケージのインストール → テスト（pytest）→ PyInstaller で単一 exe（dist\SDL_DischargeLogger.exe）
+      # パッケージのインストール → テスト（pytest）→ PyInstaller でフォルダ形式の exe（dist\SDL_DischargeLogger\SDL_DischargeLogger.exe）
       - name: Build (build.bat)
         shell: cmd
         run: build.bat
@@ -80,11 +80,11 @@ jobs:
             if ($dark -lt 10) { throw "タイトルバーにアプリのアイコンが表示されていません（shots/titlebar.png を参照）" }
           }
 
+          # フォルダ形式（exe と _internal）なので、フォルダごと別の場所にコピーして起動する
           $dir = Join-Path $env:RUNNER_TEMP "smoke"
-          New-Item -ItemType Directory -Path $dir | Out-Null
-          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
-          Copy-Item $exe.FullName $dir
-          $exePath = Join-Path $dir $exe.Name
+          Copy-Item dist\SDL_DischargeLogger $dir -Recurse
+          $exePath = Join-Path $dir "SDL_DischargeLogger.exe"
+          if (-not (Test-Path $exePath)) { throw "dist\SDL_DischargeLogger\SDL_DischargeLogger.exe がありません" }
           $times = @()
           for ($i = 1; $i -le 3; $i++) {
             $ready = Join-Path $env:RUNNER_TEMP "ready-$i.txt"
@@ -101,7 +101,7 @@ jobs:
             Start-Sleep -Seconds 1
             if ($p.HasExited) { throw "exe が表示直後に終了しました" }
             if ($i -eq 3) { Test-TitleBarIcon }
-            # onefile の exe は子プロセスが本体なので、子も含めて止める
+            # 子プロセスがあっても残らないように、子も含めて止める
             taskkill /PID $p.Id /T /F | Out-Null
             Start-Sleep -Seconds 1
           }
@@ -121,8 +121,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path out | Out-Null
-          Copy-Item (Get-ChildItem dist -Filter *.exe).FullName out
-          Copy-Item README.md out
+          Copy-Item dist\SDL_DischargeLogger out -Recurse
+          Copy-Item README.md out\SDL_DischargeLogger
 
       - uses: actions/upload-artifact@v4
         with:
@@ -131,7 +131,7 @@ jobs:
           if-no-files-found: error
 
       # リリースするときだけ（タグ vX.Y.Z のプッシュ／Run workflow でバージョン指定）：
-      # Releases に SDL_DischargeLogger-vX.Y.Z.zip（中に SDL_DischargeLogger.exe と README.md）を載せる
+      # Releases に SDL_DischargeLogger-vX.Y.Z.zip（展開すると SDL_DischargeLogger フォルダ。中に exe・_internal・README.md）を載せる
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
         shell: pwsh
@@ -151,18 +151,21 @@ jobs:
             throw "タグ $tag と src\main.py の VERSION ($version) が一致しません。タグは v$version にしてください（VERSION を変える場合は先にコミット）"
           }
           $zip = "SDL_DischargeLogger-$tag.zip"
-          Compress-Archive -Path out\* -DestinationPath $zip
+          Compress-Archive -Path out\SDL_DischargeLogger -DestinationPath $zip
           $notes = @"
           ## ダウンロードと導入
           1. 下の **$zip** をダウンロード（「Source code」はソースコードで、exe は入っていません）
-          2. zip を右クリック →「すべて展開」→ 中の **SDL_DischargeLogger.exe** を好きなフォルダに置いてダブルクリック
-             （Python・NI-VISA などのインストールは不要）
-          3. 設定ファイル・ログは exe と同じフォルダに作られます。書き込めるフォルダ（C:\Program Files 以外）に置いてください
+          2. zip を右クリック →「すべて展開」すると **SDL_DischargeLogger** フォルダができます
+          3. フォルダごと好きな場所に置き、中の **SDL_DischargeLogger.exe** をダブルクリック
+             （Python・NI-VISA などのインストールは不要。exe だけを取り出しても動きません。同じフォルダの _internal が必要です）
+          4. 設定ファイル・ログ・保存先の初期値は exe と同じフォルダです。書き込めるフォルダ（C:\Program Files 以外）に置いてください
+          5. v1.0.8 以前（exe 1 つの形）から移る場合は、前の exe の隣の sdl_logger_settings.json を新しいフォルダにコピーすると設定を引き継げます
 
           PC と SDL1020X-E の LAN 設定・使い方は同梱の README.md を参照してください。
 
           ## 注意
-          - CC 設定・負荷 ON/OFF の SCPI コマンド（SPEC.md Q-02）は実機での確認前です。
+          - CC 設定・負荷 ON/OFF・Von の SCPI コマンド（SPEC.md Q-02）は実機での確認前です。
+            Von を設定できないと表示されたら、［Von を自動設定］のチェックを外すと今までどおり使えます。
             うまく動かないときは、exe と同じフォルダの sdl_logger.log を添えて連絡してください
           "@
           gh release view $tag *> $null

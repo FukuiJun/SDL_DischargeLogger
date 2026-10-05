@@ -15,13 +15,18 @@ Siglent 電子負荷 **SDL1020X-E** を LAN（TCP ソケット）で操作して
 
 ## 導入
 
-`SDL_DischargeLogger.exe` を好きなフォルダ（例：`C:\Tools\SDL_DischargeLogger\`）に置いてダブルクリックで起動します。
-Python や NI-VISA などのドライバのインストールは不要です。
+zip を展開してできる `SDL_DischargeLogger` フォルダを、**フォルダごと** 好きな場所（例：`C:\Tools\`）に置き、
+中の `SDL_DischargeLogger.exe` をダブルクリックで起動します。Python や NI-VISA などのドライバのインストールは不要です。
 
+- フォルダの中には `SDL_DischargeLogger.exe` と `_internal` フォルダ（動作に必要なファイル）があります。
+  **exe だけを取り出しても動きません。** デスクトップから起動したいときは、exe のショートカットを作ってください。
+- v1.0.9 から、起動を速くするためにこのフォルダ形式にしました（以前の exe 1 つの形は、起動のたびに中身を一時フォルダへ
+  展開していたため遅くなっていました）。
 - 設定ファイル `sdl_logger_settings.json` とログ `sdl_logger.log` は **exe と同じフォルダ** に作られます。
   書き込みできるフォルダ（`C:\Program Files` 以外）に置いてください。
-- exe は GitHub のリポジトリ画面右側の **Releases** から最新版を開き、`SDL_DischargeLogger-vX.Y.Z.zip` をダウンロードします
-  （zip の中に `SDL_DischargeLogger.exe` と README。同じ場所の「Source code」はソースコードで、exe は入っていません）。
+  v1.0.8 以前から移るときは、前の exe の隣の `sdl_logger_settings.json` を新しいフォルダにコピーすると設定を引き継げます。
+- GitHub のリポジトリ画面右側の **Releases** から最新版を開き、`SDL_DischargeLogger-vX.Y.Z.zip` をダウンロードします
+  （展開すると `SDL_DischargeLogger` フォルダ。中に exe・`_internal`・README。同じ場所の「Source code」はソースコードで、exe は入っていません）。
   リリース前の最新ビルドは **Actions** → 「Build SDL_DischargeLogger.exe」→ **Artifacts** の `SDL_DischargeLogger` にあります。
 
 ## ネットワーク設定（PC と SDL を LAN ケーブルで直結）
@@ -252,7 +257,8 @@ py -3.12 src\cli.py --host 127.0.0.1 --current 1.0 --cutoff 3.0 --folder out --m
 ## ビルド（exe の作成）
 
 Windows 11 で `build.bat` をダブルクリックします（Python 3.12 が必要）。
-パッケージのインストール → テスト → PyInstaller の順に実行し、`dist\SDL_DischargeLogger.exe`（単一ファイル）ができます。
+パッケージのインストール → テスト → PyInstaller の順に実行し、`dist\SDL_DischargeLogger\`（`SDL_DischargeLogger.exe` と `_internal`）ができます。
+配布するときはこのフォルダごと渡します。
 
 GitHub に push すると、GitHub Actions（Windows）でも同じビルドと起動確認（起動時間の測定）が行われ、
 exe が Artifacts に保存されます。
