@@ -150,3 +150,40 @@ def test_emergency_load_off_when_lock_is_held(fake):
     finally:
         release.set()
         th.join()
+
+
+def test_set_von_and_restore(fake):
+    """Von と Von Latch を設定して読み戻す（SPEC Q-02 と同じく実機確認前のコマンド）"""
+    c = SDLClient("127.0.0.1", fake.port)
+    c.connect()
+    assert c.von_settings() == (0.0, True)
+    c.set_von(3.4, latch=False)
+    assert ":SOUR:VOLT:LEV:ON 3.400" in fake.commands and ":SOUR:VOLT:LATC:STAT OFF" in fake.commands
+    assert fake.von == 3.4 and fake.von_latch is False
+    assert c.von_settings() == (3.4, False)
+    c.set_von(0.0, latch=True)
+    assert c.von_settings() == (0.0, True)
+    c.close()
+
+
+def test_set_von_not_supported_raises(fake):
+    fake.von_supported = False
+    c = SDLClient("127.0.0.1", fake.port)
+    c.connect()
+    with pytest.raises(SDLResponseError):
+        c.set_von(3.4)
+    c.close()
+
+
+def test_fake_stops_current_below_von_when_latch_off(fake):
+    """シミュレータ：Latch OFF で電圧が Von を下回ると電流を流さない（PC が止まっても過放電しない）"""
+    c = SDLClient("127.0.0.1", fake.port)
+    c.connect()
+    c.setup_cc(1.0)
+    c.set_von(4.5, latch=False)  # 電池電圧（約 4.15 V）より高い Von
+    c.set_load(True)
+    assert c.measure().current == 0.0
+    c.set_von(3.0, latch=False)
+    assert c.measure().current == pytest.approx(1.0)
+    c.set_load(False)
+    c.close()

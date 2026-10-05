@@ -332,3 +332,36 @@ def test_cannot_save_after_discard(fake, tmp_path):
     s.request_stop(save=False)
     s.wait(10)
     assert not s.can_save
+
+
+def test_von_set_before_load_on_and_restored(fake, tmp_path):
+    """Von を設定してから負荷 ON。終わって負荷 OFF にしたら元の Von・Latch に戻す"""
+    cond = Conditions(maker=None, full_voltage=None, model="", current=1.0, cutoff=3.0, interval=0.2, von=2.9)
+    s = make_session(fake, tmp_path, cond)
+    s.start()
+    assert fake.von == 2.9 and fake.von_latch is False
+    cmds = fake.commands
+    assert cmds.index(":SOUR:VOLT:LEV:ON 2.900") < cmds.index(":SOUR:INP:STAT ON")
+    s.request_stop(save=True)
+    s.wait(10)
+    assert not fake.load_on
+    assert fake.von == 0.0 and fake.von_latch is True  # 元に戻す
+
+
+def test_von_failure_refuses_start(fake, tmp_path):
+    """Von を設定できなければ開始しない（負荷 ON しない・フォルダも作らない）"""
+    fake.von_supported = False
+    cond = Conditions(maker=None, full_voltage=None, model="", current=1.0, cutoff=3.0, interval=0.2, von=2.9)
+    s = make_session(fake, tmp_path, cond)
+    with pytest.raises(StartError, match="Von"):
+        s.start()
+    assert not fake.load_on and ":SOUR:INP:STAT ON" not in fake.commands
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_no_von_when_not_requested(fake, tmp_path):
+    s = make_session(fake, tmp_path)  # COND は von=None
+    s.start()
+    s.request_stop(save=False)
+    s.wait(10)
+    assert not any("VOLT" in c and "MEAS" not in c for c in fake.commands)

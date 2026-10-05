@@ -31,10 +31,10 @@ OCV_TABLE = [
 
 # SCPI のキーワード（長い形）。短い形・途中までの形を長い形に揃えるのに使う
 _KEYWORDS = ["MEASURE", "VOLTAGE", "CURRENT", "POWER", "SOURCE", "FUNCTION", "INPUT", "STATE",
-             "LEVEL", "IMMEDIATE", "IRANGE", "DC"]
+             "LEVEL", "IMMEDIATE", "IRANGE", "DC", "LATCH"]
 _SHORT = {"MEASURE": "MEAS", "VOLTAGE": "VOLT", "CURRENT": "CURR", "POWER": "POW", "SOURCE": "SOUR",
           "FUNCTION": "FUNC", "INPUT": "INP", "STATE": "STAT", "LEVEL": "LEV", "IMMEDIATE": "IMM",
-          "IRANGE": "IRANG", "DC": "DC"}
+          "IRANGE": "IRANG", "DC": "DC", "LATCH": "LATC"}
 
 
 def ocv(soc: float) -> float:
@@ -79,6 +79,9 @@ class FakeSDL:
         self.irange = 5.0
         self.set_current = 0.0
         self.load_on = False
+        self.von = 0.0          # Von（この電圧より下では電流を流さない）
+        self.von_latch = True   # Von Latch。OFF なら電圧が Von を下回ると電流を止める
+        self.von_supported = True  # False にすると Von のコマンドに応じない（実機で使えない場合の模擬）
         # 異常の模擬
         self.voltage_override: float | None = None  # 電圧の応答を固定する
         self.garbage = False  # MEAS に数値でない応答を返す
@@ -189,11 +192,14 @@ class FakeSDL:
         dt = (now - self._last) * self.speed
         self._last = now
         if self.load_on and self.function == "CURR":
-            self.remaining_mah = max(0.0, self.remaining_mah - self.set_current * dt / 3.6)
+            self.remaining_mah = max(0.0, self.remaining_mah - self._actual_current() * dt / 3.6)
 
     def _actual_current(self) -> float:
-        if not self.load_on or ocv(self.remaining_mah / self.capacity_mah) < 1.0:
+        v = ocv(self.remaining_mah / self.capacity_mah)
+        if not self.load_on or v < 1.0:
             return 0.0
+        if not self.von_latch and v - self.set_current * self.resistance < self.von:
+            return 0.0  # Von Latch OFF：電圧が Von を下回ったら流さない
         return self.set_current
 
     def _values(self) -> tuple[float, float, float]:
@@ -245,6 +251,18 @@ class FakeSDL:
                 return None
             if cmd in ("INP:STAT?", "INP?"):
                 return "1" if self.load_on else "0"
+            if cmd.startswith("VOLT:") and not self.von_supported:
+                return "**ERROR**" if cmd.endswith("?") else None
+            if cmd in ("VOLT:LEV:ON", "VOLT:ON"):
+                self.von = float(arg)
+                return None
+            if cmd in ("VOLT:LEV:ON?", "VOLT:ON?"):
+                return f"{self.von:.3f}"
+            if cmd in ("VOLT:LATC:STAT", "VOLT:LATC"):
+                self.von_latch = arg in ("ON", "1")
+                return None
+            if cmd in ("VOLT:LATC:STAT?", "VOLT:LATC?"):
+                return "1" if self.von_latch else "0"
             return None  # 未対応のコマンドは無視（実機ではエラーキューに入る）
 
     def count(self, command: str) -> int:

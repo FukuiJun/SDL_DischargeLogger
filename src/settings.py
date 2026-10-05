@@ -1,6 +1,7 @@
 """設定ファイル（sdl_logger_settings.json）の読み書き
 
-保存する項目: IP、ポート、保存先フォルダ、放電電流、終止電圧、取得周期。
+保存する項目: IP、ポート、保存先フォルダ、放電電流、終止電圧、取得周期、
+オプション（測定中は画面を消さない・完了を音で知らせる・Von を自動設定）。
 メーカー・満充電電圧・型番・備考は保存しない（前回の値が残って誤記録になるのを防ぐ）。
 """
 
@@ -32,6 +33,9 @@ class Settings:
     current: float = 0.400  # 初めて起動したとき（設定ファイルが無いとき）の放電電流
     cutoff: float = 3.500   # 同じく終止電圧
     interval: float = 1.0
+    keep_awake: bool = True  # 測定中は画面を消さない・ロックしない・スリープしない
+    sound: bool = True       # 放電が終わったら音で知らせる
+    auto_von: bool = True    # 開始時に Von を終止電圧 −0.1 V に設定する
 
 
 def _in_range(value, lo, hi) -> bool:
@@ -60,6 +64,9 @@ def load(path: Path | None = None) -> Settings:
     for name, rng in (("current", CURRENT_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE)):
         if _in_range(data.get(name), *rng):
             setattr(s, name, float(data[name]))
+    for name in ("keep_awake", "sound", "auto_von"):
+        if isinstance(data.get(name), bool):
+            setattr(s, name, data[name])
     return s
 
 

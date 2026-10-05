@@ -23,8 +23,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 import display
+import notify
 import paths
 import plotting
+import power
 import recorder
 import settings as settings_mod
 from display import DASH
@@ -68,6 +70,7 @@ CLOSE_QUESTION = "放電中です。停止・保存して終了しますか？"
 # 設定の間違いを防ぐため、放電電流がこの値以上・終止電圧がこの値以下なら開始前に確認する
 CONFIRM_CURRENT_A = 2.0
 CONFIRM_CUTOFF_V = 3.0
+VON_OFFSET_V = 0.1  # ［Von を自動設定］のとき Von = 終止電圧 − 0.1 V
 CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了（データは残りません）\nキャンセル: 放電を続ける"
 
 
@@ -320,6 +323,7 @@ class App:
         self.values: dict[str, float | None] = dict.fromkeys(("v", "i", "p", "mah", "wh", "elapsed"))
         self.time_span: float | None = None  # グラフの横軸の幅［時間］。None は自動
         self._saving = False                 # ［CSV保存］の保存処理中
+        self._alarm: notify.Alarm | None = None  # 放電終了を知らせる音
 
         root.title(APP_TITLE)
         root.configure(bg=C["chassis"])
@@ -523,6 +527,24 @@ class App:
         self.folder_btn = FlatButton(ff, f, "参照", self.on_browse, height=30, size=12, padx=10)
         self.folder_btn.frame.grid(row=0, column=1, padx=(px(6), px(0)))
 
+        # オプション（チェックで任意に選ぶ。状態は設定ファイルに残す）
+        self.keep_awake_var = tk.BooleanVar(value=self.settings.keep_awake)
+        self.sound_var = tk.BooleanVar(value=self.settings.sound)
+        self.auto_von_var = tk.BooleanVar(value=self.settings.auto_von)
+        self.von_text = tk.StringVar()
+        opts = tk.Frame(body, bg=C["panel"])
+        opts.pack(fill="x", pady=(px(8), px(0)))
+        chk = {"bg": C["panel"], "fg": C["text"], "activebackground": C["panel"], "activeforeground": C["text"],
+               "selectcolor": C["input-bg"], "font": f.ui_px(12), "highlightthickness": 0, "bd": 0,
+               "anchor": "w", "padx": 0, "pady": px(1), "command": self._on_option_changed}
+        self.keep_awake_chk = tk.Checkbutton(opts, text="測定中は画面を消さない・ロックしない", variable=self.keep_awake_var, **chk)
+        self.sound_chk = tk.Checkbutton(opts, text="放電が終わったら音で知らせる", variable=self.sound_var, **chk)
+        self.auto_von_chk = tk.Checkbutton(opts, textvariable=self.von_text, variable=self.auto_von_var, **chk)
+        for c in (self.keep_awake_chk, self.sound_chk, self.auto_von_chk):
+            c.pack(fill="x")
+        self.cutoff_var.trace_add("write", lambda *_: self._update_von_text())
+        self._update_von_text()
+
         memo_head = tk.Frame(body, bg=C["panel"])
         memo_head.pack(fill="x", pady=(px(12), px(6)))
         tk.Label(memo_head, text="備考", **lab).pack(side="left")
@@ -634,6 +656,9 @@ class App:
         for box in self.condition_boxes:
             box.set_state("normal" if editable else "disabled")
         self.folder_btn.set_enabled(editable)
+        self.auto_von_chk.configure(state="normal" if editable else "disabled")  # Von は開始時に設定する
+        # 測定中は画面オフ・ロック・スリープを止める（チェックしたとき）
+        power.keep_awake(self.keep_awake_var.get() and running)
 
         # ④ ボタン
         has_data = self.session is not None and bool(self.session.snapshot()[0])
@@ -815,8 +840,18 @@ class App:
         current = parse_number(self.current_var.get(), "放電電流", *settings_mod.CURRENT_RANGE, "A", 3)
         cutoff = parse_number(self.cutoff_var.get(), "終止電圧", *settings_mod.CUTOFF_RANGE, "V", 3)
         interval = parse_number(self.interval_var.get(), "取得周期", *settings_mod.INTERVAL_RANGE, "秒", 1)
+        von = round(cutoff - VON_OFFSET_V, 3) if self.auto_von_var.get() else None
         return Conditions(maker=self.maker_var.get() or None, full_voltage=self.full_var.get() or None,
-                          model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval)
+                          model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval,
+                          von=von)
+
+    def _update_von_text(self) -> None:
+        cutoff = try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE)
+        detail = f" = {cutoff - VON_OFFSET_V:.3f} V" if cutoff is not None else ""
+        self.von_text.set(f"Von を自動設定（終止電圧 − {VON_OFFSET_V:.1f} V{detail}）")
+
+    def _on_option_changed(self) -> None:
+        self._refresh()
 
     def note(self) -> str:
         return self.note_text.get("1.0", "end-1c")
@@ -831,6 +866,7 @@ class App:
     def on_start(self) -> None:
         if self.state not in (IDLE, DONE) or self.client is None or self._saving:
             return
+        self._stop_alarm()
         try:
             cond = self.read_conditions()
         except InputError as e:
@@ -861,7 +897,8 @@ class App:
         self._graph_key = None
         self._set_state(DISCHARGING)
         c = session.cond
-        self.message(f"放電開始（{c.current:.3f} A / 終止 {c.cutoff:.3f} V）")
+        von = f" / Von {c.von:.3f} V" if c.von is not None else ""
+        self.message(f"放電開始（{c.current:.3f} A / 終止 {c.cutoff:.3f} V{von}）")
 
     def _on_start_failed(self, exc: BaseException) -> None:
         self.session = None
@@ -969,10 +1006,32 @@ class App:
         if self._closing_after_stop:
             self._quit()
             return
-        if problems:
-            messagebox.showerror(APP_TITLE, full)
-        elif result.end_reason == recorder.END_REASON_CUTOFF:
-            messagebox.showinfo(APP_TITLE, full)
+        self._start_alarm(result, bool(problems))
+        try:
+            if problems:
+                messagebox.showerror(APP_TITLE, full)
+            elif result.end_reason == recorder.END_REASON_CUTOFF:
+                messagebox.showinfo(APP_TITLE, full)
+        finally:
+            self._stop_alarm()  # ダイアログを閉じたら止める
+
+    def _start_alarm(self, result, problems: bool) -> None:
+        """［放電が終わったら音で知らせる］のとき、完了は完了の音、通信断・エラーは警告の音をくり返す"""
+        if not self.sound_var.get():
+            return
+        if result.end_reason == recorder.END_REASON_CUTOFF and not problems:
+            kind = notify.DONE
+        elif problems or result.end_reason != recorder.END_REASON_MANUAL:
+            kind = notify.ALERT
+        else:
+            return  # ［ON/OFF］で止めたときは鳴らさない
+        self._stop_alarm()
+        self._alarm = notify.start_alarm(kind)
+
+    def _stop_alarm(self) -> None:
+        if self._alarm is not None:
+            self._alarm.stop()
+            self._alarm = None
 
     # ================================================================== グラフ
     def _graph_tick(self) -> None:
@@ -1078,6 +1137,9 @@ class App:
             value = try_number(var.get(), rng)
             if value is not None:
                 setattr(s, name, value)
+        s.keep_awake = self.keep_awake_var.get()
+        s.sound = self.sound_var.get()
+        s.auto_von = self.auto_von_var.get()
 
     def ask_close_choice(self) -> str | None:
         """放電中に閉じようとしたとき。'save'（保存して終了）/ 'discard'（破棄して終了）/ None（キャンセル）"""
@@ -1112,6 +1174,8 @@ class App:
         self._quit()
 
     def _quit(self) -> None:
+        self._stop_alarm()
+        power.keep_awake(False)
         self._remember_settings()
         settings_mod.save(self.settings)
         self._stop_monitor()

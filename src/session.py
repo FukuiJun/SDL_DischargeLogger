@@ -44,6 +44,7 @@ class Conditions:
     current: float
     cutoff: float
     interval: float
+    von: float | None = None  # 開始時に SDL に設定する Von [V]（None なら設定しない）
 
 
 @dataclass
@@ -82,6 +83,7 @@ class DischargeSession:
         self._integrator = Integrator()
         self._writer: PartialWriter | None = None
         self._measured: str | None = None  # 一時ファイルの内容。保存後も持っておき、もう一度保存するときに使う
+        self._von_prev: tuple[float, bool] | None = None  # Von を設定する前の SDL の Von・Latch（終了時に戻す）
         self._stop_event = threading.Event()
         self._stop_save = True
         self._stop_keep = False
@@ -128,6 +130,14 @@ class DischargeSession:
         if voltage <= c.cutoff:
             raise StartError(f"電圧が終止電圧以下です（現在 {voltage:.3f} V、終止電圧 {c.cutoff:.3f} V）")
 
+        if c.von is not None:
+            try:
+                self._von_prev = self.client.von_settings()  # 先に覚えておき、設定に失敗しても戻せるようにする
+                self.client.set_von(c.von, latch=False)
+            except SDLError as e:
+                self._restore_von()
+                raise StartError(f"SDL に Von（{c.von:.3f} V）を設定できませんでした: {e}\n"
+                                 "［Von を自動設定］のチェックを外すと、Von を設定せずに開始できます") from e
         try:
             self.client.setup_cc(c.current)
             self.client.set_load(True)
@@ -138,6 +148,7 @@ class DischargeSession:
             first = self.client.measure()
         except (SDLError, StartError) as e:
             self.client.load_off_safely()
+            self._restore_von()
             if isinstance(e, StartError):
                 raise
             raise StartError(f"放電を開始できません: {e}") from e
@@ -148,6 +159,7 @@ class DischargeSession:
             self.run_dir = recorder.create_run_dir(self.folder, start_time)
         except OSError as e:
             self.client.load_off_safely()
+            self._restore_von()
             raise StartError(f"保存先にフォルダを作れません: {self.folder}（{e}）") from e
         base = recorder.make_base_name(start_time, c.full_voltage, c.maker)
         self.base_name = recorder.unique_base_name(self.run_dir, base)
@@ -161,6 +173,7 @@ class DischargeSession:
                 self._writer.close()
                 _unlink(self.paths["partial"])
             recorder.remove_dir_if_empty(self.run_dir)
+            self._restore_von()
             raise StartError(f"一時ファイルを作れません: {self.paths['partial']}（{e}）") from e
 
         log.info("放電開始 %s 電流 %.3fA 終止 %.3fV 周期 %gs 開始電圧 %.4fV", self.base_name, c.current,
@@ -319,6 +332,8 @@ class DischargeSession:
 
     def _finish(self, reason: str, save: bool, error: str | None = None, keep: bool = False) -> None:
         load_off_ok = self.client.load_off_safely()
+        if load_off_ok:
+            self._restore_von()
         if self._writer is not None:
             self._writer.close()
         end_time = datetime.now()
@@ -342,6 +357,17 @@ class DischargeSession:
         self.result = result
         self._finished.set()
         self.events.put(("finished", result))
+
+    def _restore_von(self) -> None:
+        """開始時に変えた SDL の Von・Latch を元に戻す（負荷 OFF のあと。できなくても続ける）"""
+        if self._von_prev is None:
+            return
+        von, latch = self._von_prev
+        self._von_prev = None
+        try:
+            self.client.set_von(von, latch)
+        except SDLError as e:
+            log.warning("Von を元に戻せませんでした: %s", e)
 
     def _save(self, result: SessionResult, end_time: datetime, base: str | None = None) -> None:
         """CSV と PNG を保存する。base を渡すとその名前で（もう一度保存するとき）"""

@@ -225,6 +225,27 @@ class SDLClient:
     def load_state(self) -> bool:
         return parse_state(self.query(":SOUR:INP:STAT?"))
 
+    def von_settings(self) -> tuple[float, bool]:
+        """今の Von [V] と Von Latch（ON なら True）を読む"""
+        with self._lock:
+            von = self.query_float(":SOUR:VOLT:LEV:ON?")[0]
+            latch = parse_state(self.query(":SOUR:VOLT:LATC:STAT?"))
+        return von, latch
+
+    def set_von(self, volts: float, latch: bool = False) -> None:
+        """Von（この電圧より下では電流を流さない）と Von Latch を設定し、読み戻して確かめる。
+
+        Latch OFF にすると、PC が止まっても電池電圧が Von を下回ったところで SDL 自身が電流を止める。
+        読み戻した値が違えば SDLResponseError（SPEC Q-02 と同じく実機での確認前のコマンド）
+        """
+        with self._lock:
+            self.write(f":SOUR:VOLT:LEV:ON {volts:.3f}")
+            self.write(f":SOUR:VOLT:LATC:STAT {'ON' if latch else 'OFF'}")
+            von, now_latch = self.von_settings()
+        if abs(von - volts) > 0.005 or now_latch != latch:
+            raise SDLResponseError(f"Von が設定どおりになりません（Von {von:.3f} V、Latch {'ON' if now_latch else 'OFF'}）")
+        log.info("Von %.3f V / Latch %s を設定", volts, "ON" if latch else "OFF")
+
     def load_off_safely(self) -> bool:
         """負荷 OFF を送り、負荷状態を読んで OFF になったことを確かめる。
 

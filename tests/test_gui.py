@@ -179,7 +179,7 @@ def test_discharge_auto_stop_saves(make_app, fake, dialogs, tmp_path):
     run_dir = app.session.run_dir  # 保存先の中の出力フォルダ <YYYYMMDD_HHMM>_SDL
     assert run_dir.parent == tmp_path and run_dir.name.endswith("_SDL") and run_dir.name[:13] == app.session.base_name[:13]
     assert app.plan_label["text"] == f"保存予定: {Path(run_dir.name) / (app.session.base_name + '.csv')}"
-    assert app.message_var.get().endswith("放電開始（0.400 A / 終止 3.500 V）")
+    assert app.message_var.get().endswith("放電開始（0.400 A / 終止 3.500 V / Von 3.400 V）")
     assert not any(c[0] == "askyesno" for c in dialogs.calls)  # 初期値（0.400 A / 3.500 V）では確認を出さない
     assert str(app.model_entry["state"]) == "disabled"
     assert all(str(rb["state"]) == "disabled" for rb in app.radios)
@@ -552,3 +552,128 @@ def test_no_confirm_just_inside_limits(make_app, fake, dialogs, tmp_path):
     app.cutoff_var.set("3.001")
     start(app)
     assert not any(c[0] == "askyesno" for c in dialogs.calls)
+
+
+def test_option_checkboxes(make_app, fake, tmp_path, app_dir):
+    """オプションは初期値 ON。Von の表示は終止電圧 −0.1 V。放電中は Von だけ変えられない。設定は保存される"""
+    app = make_app()
+    assert app.keep_awake_var.get() and app.sound_var.get() and app.auto_von_var.get()
+    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V = 3.400 V）"
+    app.cutoff_var.set("3.2")
+    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V = 3.100 V）"
+    app.cutoff_var.set("abc")
+    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V）"
+    app.cutoff_var.set("3.500")
+    assert app.read_conditions().von == 3.4
+    app.auto_von_chk.invoke()
+    assert app.read_conditions().von is None
+    app.auto_von_chk.invoke()
+    connect(app, fake, tmp_path)
+    start(app)
+    assert fake.von == 3.4 and fake.von_latch is False
+    assert str(app.auto_von_chk["state"]) == "disabled"
+    assert str(app.sound_chk["state"]) == "normal" and str(app.keep_awake_chk["state"]) == "normal"
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    assert str(app.auto_von_chk["state"]) == "normal"
+    assert fake.von == 0.0 and fake.von_latch is True  # 終わったら元に戻す
+    app.sound_chk.invoke()
+    app._remember_settings()
+    assert app.settings.sound is False and app.settings.auto_von is True
+
+
+def test_start_without_von_when_unchecked(make_app, fake, tmp_path):
+    app = make_app()
+    app.auto_von_var.set(False)
+    connect(app, fake, tmp_path)
+    start(app)
+    assert fake.von == 0.0 and not any(":SOUR:VOLT:LEV:ON" in c for c in fake.commands)
+    assert app.message_var.get().endswith("放電開始（0.400 A / 終止 3.500 V）")
+
+
+def test_von_failure_message(make_app, fake, dialogs, tmp_path):
+    """Von を設定できない SDL では開始せず、チェックを外せば開始できると知らせる"""
+    fake.von_supported = False
+    app = make_app()
+    connect(app, fake, tmp_path)
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "idle" and dialogs.calls)
+    name, text = dialogs.calls[-1]
+    assert name == "showwarning" and "Von" in text and "チェックを外す" in text
+    assert not fake.load_on
+
+
+def test_keep_awake_while_discharging(make_app, fake, tmp_path, monkeypatch):
+    """［測定中は画面を消さない・ロックしない］：放電中だけ ON。チェックを外すとすぐ元に戻す"""
+    import power
+
+    calls = []
+    monkeypatch.setattr(power, "keep_awake", lambda on: calls.append(on) or True)
+    app = make_app()
+    connect(app, fake, tmp_path)
+    assert calls and not any(calls)
+    start(app)
+    assert calls[-1] is True
+    app.keep_awake_chk.invoke()
+    assert calls[-1] is False
+    app.keep_awake_chk.invoke()
+    assert calls[-1] is True
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    assert calls[-1] is False
+
+
+def _record_alarms(monkeypatch):
+    import notify
+
+    started = []
+
+    class FakeAlarm:
+        def __init__(self, kind):
+            self.kind, self.stopped = kind, False
+            started.append(self)
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(notify, "start_alarm", FakeAlarm)
+    return started
+
+
+def test_sound_on_cutoff_until_dialog_closed(make_app, fake, dialogs, tmp_path, monkeypatch):
+    """終止電圧で完了したら完了の音を鳴らし、ダイアログを閉じたら止める"""
+    started = _record_alarms(monkeypatch)
+    app = make_app()
+    connect(app, fake, tmp_path)
+    start(app)
+    fake.voltage_override = 2.5
+    assert pump(app.root, lambda: app.state == "done")
+    assert [a.kind for a in started] == ["done"] and started[0].stopped
+    assert "showinfo" in dialogs.names()
+
+
+def test_sound_alert_on_comm_lost_and_silent_on_manual_stop(make_app, fake, dialogs, tmp_path, monkeypatch):
+    started = _record_alarms(monkeypatch)
+    app = make_app()
+    connect(app, fake, tmp_path)
+    start(app)
+    app.onoff_btn.invoke()  # ［ON/OFF］で止めたときは鳴らさない
+    assert pump(app.root, lambda: app.state == "done")
+    assert started == []
+    app.csv_btn.invoke()
+    assert pump(app.root, lambda: not app._saving and not app.pending)
+    start(app)
+    fake.stop()  # 通信断で止まったら警告の音
+    assert pump(app.root, lambda: app.state == "done", timeout=30)
+    assert [a.kind for a in started] == ["alert"] and started[0].stopped
+
+
+def test_no_sound_when_unchecked(make_app, fake, dialogs, tmp_path, monkeypatch):
+    started = _record_alarms(monkeypatch)
+    app = make_app()
+    app.sound_var.set(False)
+    connect(app, fake, tmp_path)
+    start(app)
+    fake.voltage_override = 2.5
+    assert pump(app.root, lambda: app.state == "done")
+    assert started == []

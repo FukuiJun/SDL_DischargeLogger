@@ -17,7 +17,7 @@ def test_roundtrip_only_allowed_keys(app_dir, tmp_path):
                           interval=0.5)
     assert settings.save(s)
     data = json.loads((app_dir / "sdl_logger_settings.json").read_text(encoding="utf-8"))
-    assert set(data) == {"host", "port", "folder", "current", "cutoff", "interval"}
+    assert set(data) == {"host", "port", "folder", "current", "cutoff", "interval", "keep_awake", "sound", "auto_von"}
     assert settings.load() == s
 
 
@@ -44,3 +44,16 @@ def test_icon_files():
     assert {(16, 16), (32, 32), (48, 48), (256, 256)} <= set(sizes)
     for p in paths.icon_pngs():
         assert p.exists(), p
+
+
+def test_options_default_on_and_saved(app_dir):
+    """オプション（画面を消さない・音で知らせる・Von を自動設定）は初期値 ON。変えたら保存される"""
+    s = settings.load()
+    assert s.keep_awake and s.sound and s.auto_von
+    s.keep_awake, s.sound, s.auto_von = False, False, False
+    settings.save(s)
+    loaded = settings.load()
+    assert not loaded.keep_awake and not loaded.sound and not loaded.auto_von
+    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"sound": "yes", "auto_von": 1}), encoding="utf-8")
+    loaded = settings.load()
+    assert loaded.sound and loaded.auto_von  # bool でない値は無視して初期値
