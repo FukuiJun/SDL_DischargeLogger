@@ -5,11 +5,24 @@ from pathlib import Path
 
 import pytest
 
-try:
-    import tkinter as tk
+tk = pytest.importorskip("tkinter")
 
-    _r = tk.Tk()
-    _r.destroy()
+
+def new_tk():
+    """tk.Tk() を作る。GitHub Actions の Windows では Tcl の初期化ファイル（init.tcl）を
+    ときどき読めずに失敗することがあるので、少し待って作り直す（アプリの動作とは関係ない）"""
+    for attempt in range(5):
+        try:
+            return tk.Tk()
+        except tk.TclError:
+            if attempt == 4:
+                raise
+            time.sleep(0.5)
+    raise AssertionError("unreachable")
+
+
+try:
+    new_tk().destroy()
     HAS_DISPLAY = True
 except Exception:  # noqa: BLE001
     HAS_DISPLAY = False
@@ -59,7 +72,7 @@ def make_app(dialogs, tmp_path):
     apps = []
 
     def make():
-        root = tk.Tk()
+        root = new_tk()
         app = gui.App(root)
         apps.append(app)
         return app
@@ -448,7 +461,7 @@ def test_partial_file_notice_at_startup(dialogs, tmp_path, app_dir):
     (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"folder": str(tmp_path)}), encoding="utf-8")
     p = tmp_path / "20261001_1430_4v1_pana_partial.csv"
     p.write_text("x")
-    root = tk.Tk()
+    root = new_tk()
     try:
         gui.App(root)
         pump(root, lambda: bool(dialogs.calls), timeout=3)
