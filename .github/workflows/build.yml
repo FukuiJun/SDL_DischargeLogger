@@ -45,6 +45,7 @@ jobs:
             [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
             [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
             [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
           }
           "@
@@ -78,6 +79,20 @@ jobs:
             } }
             Write-Host "タイトルバーのアイコン領域の黒い画素: $dark"
             if ($dark -lt 10) { throw "タイトルバーにアプリのアイコンが表示されていません（shots/titlebar.png を参照）" }
+
+            # タスクバー・Alt+Tab に使われる大きいアイコン（WM_GETICON ICON_BIG）が設定されているか。
+            # 描いた画像は shots/taskbar_icon.png（Tk の既定の羽根になっていないかを目で確かめられる）
+            $big = [Win]::SendMessage($h, 0x7F, [IntPtr]1, [IntPtr]0)
+            if ($big -eq [IntPtr]::Zero) { throw "タスクバー用の大きいアイコンが設定されていません" }
+            $icon = [System.Drawing.Icon]::FromHandle($big)
+            $ib = $icon.ToBitmap()
+            $ib.Save((Join-Path (Get-Location) "shots\taskbar_icon.png"))
+            $idark = 0
+            for ($x = 0; $x -lt $ib.Width; $x++) { for ($y = 0; $y -lt $ib.Height; $y++) {
+              $c = $ib.GetPixel($x, $y)
+              if ($c.A -gt 128 -and $c.R -lt 60 -and $c.G -lt 60 -and $c.B -lt 60) { $idark++ }
+            } }
+            Write-Host "タスクバー用アイコン（$($ib.Width)x$($ib.Height)）の黒い画素: $idark"
           }
 
           # フォルダ形式（exe と _internal）なので、フォルダごと別の場所にコピーして起動する

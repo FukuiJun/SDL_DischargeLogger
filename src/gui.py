@@ -33,6 +33,7 @@ from display import DASH
 from sdl_client import CONNECT_ERROR_MESSAGE, SDLClient, SDLError
 from session import Conditions, DischargeSession, StartError
 import theme
+import winicon
 from theme import C, Fonts, px
 
 log = logging.getLogger("sdl.gui")
@@ -349,8 +350,10 @@ class App:
 
         Windows では .ico をこのウィンドウに直接設定する方法だけを使う。iconphoto と iconbitmap(default=) を
         続けて呼ぶと、後の設定が前のアイコンを捨ててタイトルバーのアイコンが空（白い四角）になるため。
+        タスクバー用の大きいアイコンは、ウィンドウが表示されてから winicon で設定する（_apply_taskbar_icon）。
         """
         self._icon_images = []
+        self._win_icons = None
         try:
             if sys.platform == "win32":
                 if paths.icon_ico().exists():
@@ -1249,7 +1252,13 @@ class App:
             except tk.TclError:
                 pass  # ウィンドウを閉じた後
 
+    def _apply_taskbar_icon(self) -> None:
+        """Windows：タイトルバー（小）とタスクバー・Alt+Tab（大）の両方にアプリのアイコンを設定する"""
+        if sys.platform == "win32":
+            self._win_icons = winicon.apply(self.root, paths.icon_ico())
+
     def _after_shown(self) -> None:
+        self._apply_taskbar_icon()
         ready = os.environ.get("SDL_LOGGER_READY_FILE")
         if ready:
             # ビルドの確認（起動時間の測定）用：ウィンドウが表示されたことを知らせる

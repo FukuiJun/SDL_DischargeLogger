@@ -222,6 +222,7 @@ py -3.12 src\cli.py --host 127.0.0.1 --current 1.0 --cutoff 3.0 --folder out --m
 │   ├─ session.py      放電 1 回分の進行（開始・周期測定・終止判定・再接続・保存）
 │   ├─ power.py        測定中に画面オフ・ロック・スリープしないようにする（Windows）
 │   ├─ notify.py       放電が終わったことを音で知らせる
+│   ├─ winicon.py      タイトルバーとタスクバーにアプリのアイコンを設定する（Windows）
 │   ├─ sdl_client.py   SDL 通信・制御（socket のみ）
 │   ├─ recorder.py     積算・一時ファイル・最終 CSV・ファイル名
 │   ├─ plotting.py     グラフ（画面は黒背景の液晶スタイル、PNG は白背景）

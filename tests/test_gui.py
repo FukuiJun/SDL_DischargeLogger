@@ -724,3 +724,15 @@ def test_number_field(make_app, fake, tmp_path):
     text = app.result.csv_path.read_text(encoding="utf-8-sig")
     assert "番号,7" in text
     assert app.number_var.get() == "7"  # 完了後も残す（型番と同じ）
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows だけ")
+def test_taskbar_icon_is_set_on_windows(make_app):
+    """タスクバー（大）とタイトルバー（小）の両方に、アプリのアイコンが設定される"""
+    import winicon
+
+    app = make_app()
+    app.root.update()
+    app._after_shown()
+    assert app._win_icons is not None
+    assert winicon.current(app.root) == app._win_icons

@@ -306,6 +306,7 @@ SDL_DischargeLogger/        # リポジトリ直下
 │   ├─ gui.py            # 画面（DESIGN.md 案A）
 │   ├─ session.py        # 放電 1 回分の測定・停止・保存
 │   ├─ power.py / notify.py  # 測定中の画面オフ・スリープ防止、終了の音
+│   ├─ winicon.py        # タイトルバー（小）とタスクバー（大）のアイコン設定（Windows）
 │   ├─ sdl_client.py     # SDL 通信・制御
 │   ├─ recorder.py       # 積算・CSV/一時ファイル・ファイル名・出力フォルダ
 │   ├─ plotting.py       # グラフ（画面・PNG）
