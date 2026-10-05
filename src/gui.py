@@ -336,7 +336,8 @@ class App:
         self._set_window_icon()
 
         self._build()
-        for var in (self.maker_var, self.full_var, self.current_var, self.cutoff_var, self.interval_var):
+        for var in (self.maker_var, self.full_var, self.current_var, self.cutoff_var, self.interval_var,
+                    self.number_var):
             var.trace_add("write", lambda *_: self._refresh())
         self._refresh()
         root.after(POLL_MS, self._poll)
@@ -509,13 +510,29 @@ class App:
         self.folder_var = tk.StringVar(value=self.settings.folder)
         rows = [("型番", self.model_var, f.ui_px(13)), ("放電電流 [A]", self.current_var, f.num_px(15)),
                 ("終止電圧 [V]", self.cutoff_var, f.num_px(15)), ("取得周期 [s]", self.interval_var, f.num_px(15))]
+        # 番号（任意）。ファイル名に入るので、英字は小文字に揃え、半角の英数字と - _ だけ受け付ける
+        self.number_var = tk.StringVar(value="")
+        self.number_var.trace_add("write", lambda *_: self._sanitize_number())
         self.condition_boxes: list[BoxEntry] = []
         for r, (label, var, font) in enumerate(rows):
             tk.Label(form, text=label, **lab).grid(row=r, column=0, sticky="w", pady=px(4))
-            box = BoxEntry(form, var, font)
-            box.frame.grid(row=r, column=1, sticky="ew", pady=px(4))
+            if r == 0:
+                # 型番と番号は同じ行に並べる（備考の欄を狭くしないため）
+                cell = tk.Frame(form, bg=C["panel"])
+                cell.grid(row=r, column=1, sticky="ew", pady=px(4))
+                cell.columnconfigure(0, weight=1)
+                box = BoxEntry(cell, var, font)
+                box.frame.grid(row=0, column=0, sticky="ew")
+                tk.Label(cell, text="番号", **lab).grid(row=0, column=1, padx=(px(10), px(6)))
+                self.number_box = BoxEntry(cell, self.number_var, f.ui_px(13), width=88)
+                self.number_box.frame.grid(row=0, column=2)
+            else:
+                box = BoxEntry(form, var, font)
+                box.frame.grid(row=r, column=1, sticky="ew", pady=px(4))
             self.condition_boxes.append(box)
+        self.condition_boxes.append(self.number_box)
         self.model_entry = self.condition_boxes[0].entry
+        self.number_entry = self.number_box.entry
         r = len(rows)
         tk.Label(form, text="保存先", **lab).grid(row=r, column=0, sticky="w", pady=px(4))
         ff = tk.Frame(form, bg=C["panel"])
@@ -688,7 +705,8 @@ class App:
             if r.csv_path:
                 return f"保存済み: {Path(r.csv_path.parent.name) / r.csv_path.name}"
             return "保存できませんでした（一時ファイルを残しました）"
-        pattern = display.planned_name_pattern(self.full_var.get() or None, self.maker_var.get() or None)
+        pattern = display.planned_name_pattern(self.full_var.get() or None, self.maker_var.get() or None,
+                                               self.number_var.get() or None)
         return f"保存予定: {pattern}"  # 日時は開始時に決まる
 
     def _render_values(self) -> None:
@@ -843,7 +861,13 @@ class App:
         von = round(cutoff - VON_OFFSET_V, 3) if self.auto_von_var.get() else None
         return Conditions(maker=self.maker_var.get() or None, full_voltage=self.full_var.get() or None,
                           model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval,
-                          von=von)
+                          von=von, number=self.number_var.get())
+
+    def _sanitize_number(self) -> None:
+        text = self.number_var.get()
+        clean = recorder.sanitize_number(text)
+        if clean != text:
+            self.number_var.set(clean)
 
     def _update_von_text(self) -> None:
         cutoff = try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE)

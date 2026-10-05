@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--maker", choices=recorder.MAKERS)
     ap.add_argument("--full", choices=recorder.FULL_VOLTAGES, help="満充電電圧")
     ap.add_argument("--model", default="", help="型番")
+    ap.add_argument("--number", default="", help="番号（半角の英数字と - _。ファイル名の末尾に _no<番号>）")
     ap.add_argument("--note", default="", help="備考")
     args = ap.parse_args(argv)
 
@@ -42,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         print("接続:", client.connect())
         session = DischargeSession(client, args.folder,
                                    Conditions(args.maker, args.full, args.model, args.current, args.cutoff,
-                                              args.interval), note=args.note)
+                                              args.interval, number=recorder.sanitize_number(args.number)),
+                                   note=args.note)
         session.start()
     except (SDLError, StartError) as e:
         print("エラー:", e, file=sys.stderr)

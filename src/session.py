@@ -45,6 +45,7 @@ class Conditions:
     cutoff: float
     interval: float
     von: float | None = None  # 開始時に SDL に設定する Von [V]（None なら設定しない）
+    number: str = ""          # 番号（任意。半角の英数字と - _。ファイル名と CSV に入れる）
 
 
 @dataclass
@@ -161,7 +162,7 @@ class DischargeSession:
             self.client.load_off_safely()
             self._restore_von()
             raise StartError(f"保存先にフォルダを作れません: {self.folder}（{e}）") from e
-        base = recorder.make_base_name(start_time, c.full_voltage, c.maker)
+        base = recorder.make_base_name(start_time, c.full_voltage, c.maker, c.number)
         self.base_name = recorder.unique_base_name(self.run_dir, base)
         self.paths = recorder.output_paths(self.run_dir, self.base_name)
         try:
@@ -376,7 +377,7 @@ class DischargeSession:
         info = TestInfo(start=self.start_time, end=end_time, end_reason=result.end_reason, maker=c.maker,
                         full_voltage=c.full_voltage, model=c.model, current=c.current, cutoff=c.cutoff,
                         mah=self._integrator.mah, wh=self._integrator.wh, interval=c.interval,
-                        idn=self.client.idn, note=self.note)
+                        idn=self.client.idn, note=self.note, number=c.number)
         partial = self.paths["partial"]
         try:
             if self._measured is None:

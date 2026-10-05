@@ -33,13 +33,26 @@ END_REASON_ERROR = "異常終了"
 
 
 # ---- ファイル名 ----
-def make_base_name(start: datetime, full_voltage: str | None = None, maker: str | None = None) -> str:
-    """<YYYYMMDD_HHMM>[_<満充電電圧 4v1 など>][_<メーカー略称>]（未選択の部分は _ ごと省く。同じ分に重なれば _2 …）"""
+NUMBER_MAX_LEN = 20
+NUMBER_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
+
+
+def sanitize_number(text: str) -> str:
+    """番号の入力を、ファイル名に使える形にする（英字は小文字に、半角の英数字と - _ 以外は捨てる、最大 20 文字）"""
+    return "".join(ch for ch in text.lower() if ch in NUMBER_CHARS)[:NUMBER_MAX_LEN]
+
+
+def make_base_name(start: datetime, full_voltage: str | None = None, maker: str | None = None,
+                   number: str | None = None) -> str:
+    """<YYYYMMDD_HHMM>[_<満充電電圧 4v1 など>][_<メーカー略称>][_no<番号>]
+    （未選択・未入力の部分は _ ごと省く。同じ分に重なれば _2 …）"""
     parts = [start.strftime("%Y%m%d_%H%M")]
     if full_voltage:
         parts.append(full_voltage_tag(full_voltage))
     if maker:
         parts.append(MAKER_ABBR[maker])
+    if number:
+        parts.append("no" + number)
     return "_".join(parts)
 
 
@@ -233,6 +246,7 @@ class TestInfo:
     interval: float
     idn: str
     note: str
+    number: str = ""
 
 
 def format_interval(value: float) -> str:
@@ -251,6 +265,7 @@ def info_lines(info: TestInfo) -> str:
         ["メーカー", info.maker or ""],
         ["満充電電圧[V]", full],
         ["型番", info.model or ""],
+        ["番号", info.number or ""],
         ["放電電流[A]", f"{info.current:.3f}"],
         ["終止電圧[V]", f"{info.cutoff:.3f}"],
         ["放電容量[mAh]", f"{info.mah:.1f}"],

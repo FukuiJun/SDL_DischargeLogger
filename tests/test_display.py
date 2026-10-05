@@ -48,6 +48,7 @@ def test_planned_name_pattern():
     assert display.planned_name_pattern("4.1V", "Panasonic") == str(folder / "YYYYMMDD_HHMM_4v1_pana.csv")
     assert display.planned_name_pattern(None, "マクセル") == str(folder / "YYYYMMDD_HHMM_maxell.csv")
     assert display.planned_name_pattern(None, None) == str(folder / "YYYYMMDD_HHMM.csv")
+    assert display.planned_name_pattern("4.1V", None, "3") == str(folder / "YYYYMMDD_HHMM_4v1_no3.csv")
 
 
 def test_colors_defined_in_one_place():

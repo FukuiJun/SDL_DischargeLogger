@@ -697,3 +697,30 @@ def test_no_sound_when_unchecked(make_app, fake, dialogs, tmp_path, monkeypatch)
     fake.voltage_override = 2.5
     assert pump(app.root, lambda: app.state == "done")
     assert started == []
+
+
+
+def test_number_field(make_app, fake, tmp_path):
+    """番号（任意）：英字は小文字、半角の英数字と - _ だけ。ファイル名の末尾と CSV に入る。放電中は変えられない"""
+    app = make_app()
+    app.number_var.set("No.3")
+    assert app.number_var.get() == "no3"
+    app.number_var.set("A-1")
+    assert app.number_var.get() == "a-1"
+    app.number_var.set("x" * 25)
+    assert app.number_var.get() == "x" * 20
+    app.number_var.set("7")
+    app.full_var.set("4.1V")
+    assert app.plan_label["text"] == f"保存予定: {Path('YYYYMMDD_HHMM_SDL') / 'YYYYMMDD_HHMM_4v1_no7.csv'}"
+    connect(app, fake, tmp_path)
+    start(app)
+    assert app.session.base_name.endswith("_4v1_no7")
+    assert str(app.number_entry["state"]) == "disabled"
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    assert str(app.number_entry["state"]) == "normal"
+    app.csv_btn.invoke()
+    assert pump(app.root, lambda: not app._saving and not app.pending)
+    text = app.result.csv_path.read_text(encoding="utf-8-sig")
+    assert "番号,7" in text
+    assert app.number_var.get() == "7"  # 完了後も残す（型番と同じ）

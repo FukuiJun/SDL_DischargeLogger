@@ -113,7 +113,7 @@ def test_manual_stop_and_save_with_note(fake, tmp_path):
     assert not s.paths["partial"].exists()
     with open(result.csv_path, encoding="utf-8-sig", newline="") as fp:
         rows = list(csv.reader(fp))
-    info = {r[0]: r[1:] for r in rows[:14] if r}
+    info = {r[0]: r[1:] for r in rows[:15] if r}
     assert info["備考"] == ["25℃恒温槽内。\n2回目"]
     assert info["型番"] == ["NCR18650B"]
     header = rows.index(["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]"])
