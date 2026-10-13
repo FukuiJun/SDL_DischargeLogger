@@ -3,6 +3,8 @@
 import struct
 import time
 
+import pytest
+
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
@@ -108,7 +110,11 @@ def test_time_window_manual_span():
     assert plotting.time_window(1800, 3.0) == (0.0, 3.0, 0.5)           # 幅より短い：0 から
     xmin, xmax, step = plotting.time_window(5 * 3600, 2.0)              # 幅より長い：最新 2 時間
     assert (xmin, xmax, step) == (3.0, 5.0, 0.5)
-    assert plotting.tick_step(0.5) == 1 / 6 and plotting.tick_step(24) == 2.0 and plotting.tick_step(48) == 4.0
+    assert plotting.tick_step(24) == 2.0 and plotting.tick_step(48) == 4.0
+    assert plotting.tick_step(0.5) == 5 / 60          # 30 分 → 5 分刻み
+    assert plotting.tick_step(0.05) == 30 / 3600      # 3 分 → 30 秒刻み
+    assert plotting.time_window(150, 0.05) == (0.0, 0.05, 30 / 3600)
+    assert plotting.time_window(240, 0.05) == pytest.approx((1 / 60, 4 / 60, 30 / 3600))  # 3 分を超えたら送る
 
 
 def test_lcd_manual_span_scrolls():
@@ -123,3 +129,40 @@ def test_lcd_manual_span_scrolls():
     assert min(xs) >= lo - 0.01  # 範囲外の古い点は描かない（左端の外の 1 点を除く）
     labels = [lb.get_text() for lb in plot.ax_i.get_xticklabels() if lb.get_text()]
     assert labels[-1].endswith(" h") or labels[-1].count(":") == 1
+
+
+
+def test_fit_axis():
+    """放電が終わったあと・画像：測定時間に合う横軸（余白 5%、目盛りの区切り 8 以下）"""
+    assert plotting.fit_axis(120) == pytest.approx((150 / 3600, 30 / 3600))       # 2 分 → 0〜2:30、30 秒刻み
+    assert plotting.fit_axis(25 * 60) == pytest.approx((0.5, 5 / 60))             # 25 分 → 0〜30 分、5 分刻み
+    assert plotting.fit_axis(2 * 3600 + 12 * 60) == pytest.approx((2.5, 0.5))     # 2:12 → 0〜2:30、30 分刻み
+    assert plotting.fit_axis(0) == pytest.approx((60 / 3600, 10 / 3600))          # 最低 1 分
+    assert plotting.time_window(120, None, fit=True) == pytest.approx((0.0, 150 / 3600, 30 / 3600))
+    assert plotting.time_window(120, None) == (0.0, 1.0, 0.5)                     # 測定中の自動は今までどおり
+
+
+def test_format_time_switches_to_seconds():
+    assert plotting.format_time(150 / 3600, 30 / 3600) == "2:30"   # 2 分 30 秒（m:ss）
+    assert plotting.format_time(2.5, 0.5) == "2:30"                # 2 時間 30 分（h:mm）
+    assert plotting.format_time(5 / 60, 1 / 60) == "0:05"          # 1 分刻みは h:mm
+    assert plotting.uses_seconds(30 / 3600) and not plotting.uses_seconds(1 / 60)
+
+
+def test_png_axis_fits_short_discharge(tmp_path):
+    """2 分で終わった放電の画像は、横軸が 0〜2:30（分:秒）で全体が収まる"""
+    t = [float(k) for k in range(0, 121)]
+    fig = plotting.render_png(tmp_path / "s.png", t, [4.1 - k * 0.004 for k in range(121)], [1.0] * 121,
+                              3.5, 1.0, ["x"])
+    ax_i = fig.axes[1]
+    assert ax_i.get_xlim() == pytest.approx((0.0, 150 / 3600))
+    assert ax_i.get_xlabel() == "経過時間 [分:秒]"
+    labels = [ax_i.xaxis.get_major_formatter()(x, None) for x in ax_i.get_xticks()]
+    assert labels[0] == "0:00" and labels[-1] == "2:30" and "1:00" in labels
+
+
+def test_png_axis_long_discharge_uses_hmm(tmp_path):
+    t = [float(k) for k in range(0, 3 * 3600, 60)]
+    fig = plotting.render_png(tmp_path / "l.png", t, [4.0] * len(t), [1.0] * len(t), 3.0, 1.0, ["x"])
+    assert fig.axes[1].get_xlim() == pytest.approx((0.0, 3.5))
+    assert fig.axes[1].get_xlabel() == "経過時間 [h:mm]"

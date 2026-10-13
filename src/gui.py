@@ -60,8 +60,8 @@ DONE = "done"                   # 完了
 
 # グラフの横軸の幅の選択肢（自由入力もできる：「90分」「2.5時間」「4」(時間) など）
 SPAN_AUTO = "自動"
-SPAN_PRESETS = [SPAN_AUTO, "30分", "1時間", "2時間", "3時間", "6時間", "12時間", "24時間"]
-SPAN_RANGE_H = (10 / 60, 100.0)
+SPAN_PRESETS = [SPAN_AUTO, "3分", "30分", "1時間", "2時間", "3時間", "6時間", "12時間", "24時間"]
+SPAN_RANGE_H = (1 / 60, 100.0)  # 手動で選べる横軸の幅（1 分〜100 時間）
 
 UNSAVED_START = "保存していないデータがあります。破棄して放電を開始しますか？"
 UNSAVED_DISCONNECT = "保存していないデータがあります。破棄して切断しますか？"
@@ -96,11 +96,11 @@ def parse_span(text: str) -> float | None:
         return None
     m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(分|min|m|時間|h|hr)?", t)
     if not m:
-        raise InputError("横軸の幅は「自動」、または 10分〜100時間 で入力してください（例: 90分、2.5時間）")
+        raise InputError("横軸の幅は「自動」、または 1分〜100時間 で入力してください（例: 90分、2.5時間）")
     value = float(m.group(1))
     hours = value / 60 if m.group(2) in ("分", "min", "m") else value
     if not SPAN_RANGE_H[0] - 1e-9 <= hours <= SPAN_RANGE_H[1]:
-        raise InputError("横軸の幅は「自動」、または 10分〜100時間 で入力してください（例: 90分、2.5時間）")
+        raise InputError("横軸の幅は「自動」、または 1分〜100時間 で入力してください（例: 90分、2.5時間）")
     return hours
 
 
@@ -1084,11 +1084,14 @@ class App:
 
     def _draw_graph(self, force: bool = False) -> None:
         t, v, i, cutoff, current = self._graph_source()
-        key = (id(self.session), len(t), cutoff, current, self.time_span)
+        # 横軸が自動なら、放電が終わったあとは測定時間に合わせる（測定中は伸びていく分の余裕を持たせる）
+        s = self.session
+        fit = self.time_span is None and s is not None and s.finished and len(t) >= 2
+        key = (id(self.session), len(t), cutoff, current, self.time_span, fit)
         if not force and key == self._graph_key:
             return
         self._graph_key = key
-        self.plot.update(t, v, i, cutoff, current, self.time_span)
+        self.plot.update(t, v, i, cutoff, current, self.time_span, fit=fit)
         self.canvas.draw_idle()
 
     def apply_span(self) -> None:

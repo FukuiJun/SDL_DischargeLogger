@@ -501,6 +501,8 @@ def test_time_span_control(make_app, fake, tmp_path):
     assert gui.parse_span("2.5時間") == 2.5
     assert gui.parse_span("4") == 4.0
     assert gui.format_span(0.5) == "30分" and gui.format_span(2.5) == "2.5時間" and gui.format_span(None) == "自動"
+    assert gui.parse_span("3分") == 0.05 and gui.format_span(0.05) == "3分" and "3分" in gui.SPAN_PRESETS
+    assert gui.parse_span("1分") == pytest.approx(1 / 60)
     app = make_app()
     connect(app, fake, tmp_path)
     start(app)
@@ -511,7 +513,7 @@ def test_time_span_control(make_app, fake, tmp_path):
     app.span_var.set("abc")
     app.apply_span()
     assert app.time_span == 2.0 and app.span_var.get() == "2時間"
-    assert "10分〜100時間" in app.message_var.get()
+    assert "1分〜100時間" in app.message_var.get()
     app.span_var.set("自動")
     app.apply_span()
     assert app.time_span is None
@@ -736,3 +738,23 @@ def test_taskbar_icon_is_set_on_windows(make_app):
     app._after_shown()
     assert app._win_icons is not None
     assert winicon.current(app.root) == app._win_icons
+
+
+
+def test_screen_axis_fits_after_discharge(make_app, fake, tmp_path):
+    """横軸が自動なら、放電が終わったあとの画面は測定時間に合わせる（測定中は最低 1 時間）。手動ならその幅のまま"""
+    app = make_app()
+    connect(app, fake, tmp_path)
+    start(app)
+    assert pump(app.root, lambda: len(app.session.snapshot()[0]) >= 3)
+    app._draw_graph(force=True)
+    assert app.plot.ax_i.get_xlim() == (0.0, 1.0)         # 測定中の自動：最低 1 時間
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    app._draw_graph(force=True)
+    xmax = app.plot.ax_i.get_xlim()[1]
+    t_end = app.session.snapshot()[0][-1] / 3600
+    assert t_end < xmax <= 1 / 60 + 1e-9                  # 数秒の測定 → 右端は 1 分（最低）
+    app.span_var.set("3分")
+    app.apply_span()
+    assert app.plot.ax_i.get_xlim() == (0.0, 0.05)        # 手動ならその幅

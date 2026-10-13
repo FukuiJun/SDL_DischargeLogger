@@ -90,6 +90,23 @@ def time_axis(max_elapsed_s: float) -> tuple[float, float]:
     return xmax, step
 
 
+# 測定時間に合わせた横軸（fit_axis）で使う目盛り間隔の候補［秒］
+FIT_STEPS_S = (10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200)
+FIT_MAX_TICKS = 8
+
+
+def fit_axis(duration_s: float) -> tuple[float, float]:
+    """測定時間にちょうど合う横軸の (上限, 目盛り間隔)［時間］。放電が終わったあとの画面と画像に使う。
+
+    少し余白（5%、最低 1 分）を足し、目盛りの区切りが 8 以下になる最小の間隔を選んで、上限をその倍数にする。
+    例: 2 分 → 0〜2:30（30 秒刻み）、25 分 → 0〜30 分（5 分刻み）
+    """
+    raw = max(duration_s * 1.05, 60.0)
+    step = next((st for st in FIT_STEPS_S if raw / st <= FIT_MAX_TICKS + 1e-9), FIT_STEPS_S[-1])
+    xmax = math.ceil(raw / step - 1e-9) * step
+    return xmax / 3600, step / 3600
+
+
 def tick_step(span_hours: float) -> float:
     """横軸の幅［時間］に対する目盛りの間隔［時間］"""
     if span_hours > 24:
@@ -102,17 +119,23 @@ def tick_step(span_hours: float) -> float:
         return 0.5
     if span_hours > 0.5:
         return 0.25
-    return 1 / 6  # 10 分
+    if span_hours > 10 / 60:
+        return 5 / 60   # 5 分
+    if span_hours > 5 / 60:
+        return 1 / 60   # 1 分
+    return 30 / 3600    # 30 秒
 
 
-def time_window(max_elapsed_s: float, span_hours: float | None = None) -> tuple[float, float, float]:
+def time_window(max_elapsed_s: float, span_hours: float | None = None, *,
+                fit: bool = False) -> tuple[float, float, float]:
     """横軸の (左端, 右端, 目盛り間隔)［時間］。
 
-    span_hours が None なら自動（0 から time_axis の上限まで）。指定したときはその幅で固定し、
-    経過時間が幅を超えたら最新の点が右端に来るように送る。
+    span_hours が None なら自動。fit=True なら測定時間に合わせ（fit_axis：終わったあとの画面・画像）、
+    そうでなければ伸びていく分の余裕を持たせる（time_axis：測定中）。
+    span_hours を指定したときはその幅で固定し、経過時間が幅を超えたら最新の点が右端に来るように送る。
     """
     if span_hours is None:
-        xmax, step = time_axis(max_elapsed_s)
+        xmax, step = fit_axis(max_elapsed_s) if fit else time_axis(max_elapsed_s)
         return 0.0, xmax, step
     t = max_elapsed_s / 3600
     step = tick_step(span_hours)
@@ -123,6 +146,19 @@ def time_window(max_elapsed_s: float, span_hours: float | None = None) -> tuple[
 
 def format_hmm(hours: float) -> str:
     total = int(round(hours * 60))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def uses_seconds(step_hours: float) -> bool:
+    """目盛り間隔が 1 分未満なら、目盛りを m:ss（分:秒）で書く"""
+    return step_hours < 1 / 60 - 1e-9
+
+
+def format_time(hours: float, step_hours: float) -> str:
+    """横軸の目盛り。間隔が 1 分以上なら h:mm、1 分未満なら m:ss"""
+    if not uses_seconds(step_hours):
+        return format_hmm(hours)
+    total = int(round(hours * 3600))
     return f"{total // 60}:{total % 60:02d}"
 
 
@@ -157,9 +193,9 @@ def current_ylim(set_current: float | None, currents: Sequence[float] = ()) -> t
 
 
 def _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, *, suffix_h: bool,
-                  span_hours: float | None = None) -> tuple[float, float, list[float]]:
+                  span_hours: float | None = None, fit: bool = False) -> tuple[float, float, list[float]]:
     max_t = elapsed[-1] if len(elapsed) else 0.0
-    xmin, xmax, step = time_window(max_t, span_hours)
+    xmin, xmax, step = time_window(max_t, span_hours, fit=fit)
     # 横軸の範囲に入る点だけを描く（左端の外の 1 点は線をつなぐために残す）
     start = max(bisect.bisect_left(elapsed, xmin * 3600) - 1, 0) if xmin > 0 else 0
     elapsed, voltage, current = elapsed[start:], voltage[start:], current[start:]
@@ -174,8 +210,10 @@ def _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, *,
     for ax in (ax_v, ax_i):
         ax.xaxis.set_major_locator(FixedLocator(ticks))
     last = ticks[-1] if ticks else xmax
+    unit = " 分" if uses_seconds(step) else " h"  # 画面の最後の目盛りに付ける単位
     ax_i.xaxis.set_major_formatter(FuncFormatter(
-        lambda x, _pos: format_hmm(x) + (" h" if suffix_h and abs(x - last) < 1e-9 else "")))
+        lambda x, _pos: format_time(x, step) + (unit if suffix_h and abs(x - last) < 1e-9 else "")))
+    ax_i._sdl_step = step
 
     v_lo, v_hi, v_ticks = voltage_axis(cutoff, voltage)
     ax_v.set_ylim(v_lo, v_hi)
@@ -233,10 +271,11 @@ class LcdPlot:
         self.ax_v.set_position((left, v_bottom, right - left, max(1 - LCD_TOP / h - v_bottom, 0.05)))
 
     def update(self, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
-               cutoff: float | None, set_current: float | None, span_hours: float | None = None) -> None:
-        """span_hours: 横軸の幅［時間］。None なら自動"""
+               cutoff: float | None, set_current: float | None, span_hours: float | None = None,
+               fit: bool = False) -> None:
+        """span_hours: 横軸の幅［時間］。None なら自動。fit: 自動のとき測定時間に合わせる（放電が終わったあと）"""
         xmin, xmax, values = _apply_common(self.ax_v, self.ax_i, elapsed, voltage, current, cutoff, set_current,
-                                           suffix_h=True, span_hours=span_hours)
+                                           suffix_h=True, span_hours=span_hours, fit=fit)
         self.legend.set_text(f"- - 終止電圧 {cutoff:.3f} V" if cutoff is not None else "")
         # 目盛り数字は Consolas。横軸の最初は左揃え・最後は右揃え（液晶の枠からはみ出さないように）
         for ax in (self.ax_v, self.ax_i):
@@ -268,8 +307,11 @@ def png_title_lines(base: str | None, model: str, current: float | None, cutoff:
 
 
 def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
-               cutoff: float | None, set_current: float | None, title_lines: list[str]) -> None:
-    """1600×1000 px の白背景 PNG を保存する（画面のグラフとは別の Figure で描く）"""
+               cutoff: float | None, set_current: float | None, title_lines: list[str]) -> Figure:
+    """1600×1000 px の白背景 PNG を保存する（画面のグラフとは別の Figure で描く）。
+
+    横軸はいつも測定全体に合わせる（画面の横軸の設定には関係なく、最初から最後までが収まる）。
+    """
     setup_fonts()
     fig = Figure(figsize=PNG_SIZE_INCH, dpi=PNG_DPI, facecolor=C["png-bg"])
     FigureCanvasAgg(fig)
@@ -290,15 +332,17 @@ def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], c
     (ax_i._sdl_line,) = ax_i.plot([], [], color=C["png-current"], linewidth=2.0)
     ax_v._sdl_cutoff = ax_v.axhline(float("nan"), color=C["png-cutoff"], linewidth=1.5, linestyle=CUTOFF_DASH)
     ax_i.yaxis.set_major_formatter(FuncFormatter(lambda y, _p: f"{y:.2f}"))
-    _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, suffix_h=False)
+    _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, suffix_h=False, fit=True)
     if cutoff is not None:
         ax_v.text(1.0, cutoff, f"終止電圧 {cutoff:.3f} V", transform=ax_v.get_yaxis_transform(),
                   ha="right", va="bottom", color=C["png-cutoff"], fontsize=11,
                   bbox={"facecolor": C["png-bg"], "edgecolor": "none", "pad": 2})
     ax_v.set_ylabel("電圧 [V]", color=C["png-text"], fontsize=13)
     ax_i.set_ylabel("電流 [A]", color=C["png-text"], fontsize=13)
-    ax_i.set_xlabel("経過時間 [h:mm]", color=C["png-text"], fontsize=13)
+    xlabel = "経過時間 [分:秒]" if uses_seconds(ax_i._sdl_step) else "経過時間 [h:mm]"
+    ax_i.set_xlabel(xlabel, color=C["png-text"], fontsize=13)
     n = len(title_lines)
     fig.suptitle("\n".join(title_lines), color=C["png-text"], fontsize=15, linespacing=1.5, y=0.985, va="top")
     fig.subplots_adjust(left=0.07, right=0.97, bottom=0.08, top=0.92 - 0.035 * (n - 1))
     fig.savefig(str(path), dpi=PNG_DPI, format="png", facecolor=C["png-bg"])
+    return fig  # 確認用（呼び出し側は使わなくてよい）
