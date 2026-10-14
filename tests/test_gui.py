@@ -758,3 +758,81 @@ def test_screen_axis_fits_after_discharge(make_app, fake, tmp_path):
     app.span_var.set("3分")
     app.apply_span()
     assert app.plot.ax_i.get_xlim() == (0.0, 0.05)        # 手動ならその幅
+
+
+def test_offset_fields_enabled_only_when_checked(make_app, fake, dialogs, tmp_path, app_dir):
+    """オフセットは初期値 OFF・0 秒。チェックしたときだけ秒数を編集でき、チェックを外すと使わない"""
+    app = make_app()
+    assert app.rest_var.get() is False
+    assert app.pre_rest_var.get() == "0" and app.post_rest_var.get() == "0"
+    assert all(str(b.entry["state"]) == "disabled" for b in app.rest_boxes)
+    app.rest_chk.invoke()
+    assert all(str(b.entry["state"]) == "normal" for b in app.rest_boxes)
+    app.pre_rest_var.set("10")
+    app.post_rest_var.set("600")
+    c = app.read_conditions()
+    assert (c.pre_rest, c.post_rest) == (10.0, 600.0)
+    app.post_rest_var.set("-1")
+    with pytest.raises(gui_mod().InputError, match="オフセット（放電後）は 0〜7200 秒"):
+        app.read_conditions()
+    app.post_rest_var.set("600")
+    app.rest_chk.invoke()
+    assert all(str(b.entry["state"]) == "disabled" for b in app.rest_boxes)
+    c = app.read_conditions()
+    assert (c.pre_rest, c.post_rest) == (0.0, 0.0)  # チェックを外したら秒数が入っていても使わない
+    app.rest_chk.invoke()
+    app._remember_settings()
+    assert app.settings.rest is True and (app.settings.pre_rest, app.settings.post_rest) == (10.0, 600.0)
+
+
+def gui_mod():
+    import gui
+    return gui
+
+
+def test_offset_run_shows_phases(make_app, fake, dialogs, tmp_path):
+    """前休止（負荷 OFF・残り時間）→ 放電 → 後休止 → 完了。グラフに縦線、画像の上部に放電前・放電後の電圧"""
+    app = make_app()
+    connect(app, fake, tmp_path)
+    app.rest_chk.invoke()
+    app.pre_rest_var.set("1")
+    app.post_rest_var.set("1")
+    start(app)
+    assert app.session.phase == "前休止"
+    assert app.load_label["text"] == "LOAD OFF"
+    assert app.state_label["text"].startswith("● 前休止中 残り 0:01")
+    assert app.onoff_btn.lit and app.onoff_btn.enabled  # 測定中（押すと終了）
+    assert all(str(b.entry["state"]) == "disabled" for b in app.rest_boxes)
+    assert pump(app.root, lambda: app.load_label["text"] == "LOAD ON")  # 区間の知らせを画面が受け取ったら
+    assert app.session.phase == "放電" and app.state_label["text"] == "● 放電中"
+    assert "放電開始" in app.message_var.get()
+    fake.voltage_override = 2.9
+    assert pump(app.root, lambda: "後休止中 残り" in app.state_label["text"])
+    assert app.load_label["text"] == "LOAD OFF"
+    fake.voltage_override = None
+    assert pump(app.root, lambda: app.state == "done")
+    assert app.result.end_reason == "終止電圧到達"
+    app._draw_graph(force=True)
+    assert len(app.plot.ax_v._sdl_marks) == 2
+    lines = app.session.title_lines()
+    assert lines[-1].startswith("放電前電圧: ") and " / 放電後電圧: " in lines[-1]
+    assert app.result.png_path.exists()
+
+
+def test_stop_post_rest_with_onoff_is_quiet(make_app, fake, dialogs, tmp_path, monkeypatch):
+    """後休止を［ON/OFF］で止めたら、終止電圧到達として保存し、音とダイアログは出さない"""
+    import gui
+
+    started = []
+    monkeypatch.setattr(gui.notify, "start_alarm", lambda kind: started.append(kind))
+    app = make_app()
+    connect(app, fake, tmp_path)
+    app.rest_chk.invoke()
+    app.post_rest_var.set("60")
+    start(app)
+    fake.voltage_override = 2.9
+    assert pump(app.root, lambda: app.session.phase == "後休止")
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    assert app.result.end_reason == "終止電圧到達" and app.result.csv_path.exists()
+    assert started == [] and "showinfo" not in dialogs.names()

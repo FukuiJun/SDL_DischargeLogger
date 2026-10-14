@@ -56,8 +56,8 @@ def test_capacity_trapezoid_with_gap():
 
 def test_sample_row_format():
     s = Sample(datetime(2026, 10, 1, 14, 30, 6, 121000), 1.0012, 4.1502, 1.0001, 4.1506, 0.2779, 0.00116,
-               "4.15020", "1.0001", "4.1506")
-    assert s.row() == ["2026/10/01 14:30:06.121", "1.001", "4.15020", "1.0001", "4.1506", "0.278", "0.0012"]
+               "4.15020", "1.0001", "4.1506", "放電")
+    assert s.row() == ["2026/10/01 14:30:06.121", "1.001", "4.15020", "1.0001", "4.1506", "0.278", "0.0012", "放電"]
 
 
 def _info(**kw):
@@ -102,12 +102,27 @@ def test_final_csv_layout(tmp_path):
     assert lines[10] == "放電容量[mAh],2702.5"
     assert lines[11] == "電力量[Wh],9.874"
     assert lines[12] == "取得周期[s],1.0"
-    assert lines[13] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
-    assert lines[14] == '備考,"25℃恒温槽内。2回目"'
-    assert lines[15] == ""
-    assert lines[16] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh]"
-    assert lines[17].startswith("2026/10/01 14:30:05.000,0.000,")
-    assert len([ln for ln in lines[17:] if ln]) == 3
+    assert lines[13] == "オフセット 放電前[s],0"
+    assert lines[14] == "オフセット 放電後[s],0"
+    assert lines[15] == "放電前電圧[V],"  # オフセットを入れないときは空欄
+    assert lines[16] == "放電後電圧[V],"
+    assert lines[17] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
+    assert lines[18] == '備考,"25℃恒温槽内。2回目"'
+    assert lines[19] == ""
+    assert lines[20] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh],区間"
+    assert lines[21].startswith("2026/10/01 14:30:05.000,0.000,")
+    assert len([ln for ln in lines[21:] if ln]) == 3
+
+
+def test_final_csv_offsets_and_rest_voltages(tmp_path):
+    """オフセットを入れたときは秒数と放電前・放電後の電圧が入る"""
+    out = _write(tmp_path, _info(pre_rest=10.0, post_rest=600.0, pre_voltage=4.1523, post_voltage=3.4127))
+    rows = list(csv.reader(out.read_text(encoding="utf-8-sig").splitlines()))
+    d = {r[0]: r[1:] for r in rows if r}
+    assert d["オフセット 放電前[s]"] == ["10"]
+    assert d["オフセット 放電後[s]"] == ["600"]
+    assert d["放電前電圧[V]"] == ["4.152"]
+    assert d["放電後電圧[V]"] == ["3.413"]
 
 
 def test_final_csv_unselected_fields_are_blank(tmp_path):

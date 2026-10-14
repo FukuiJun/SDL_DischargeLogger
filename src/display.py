@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +40,14 @@ def fmt_elapsed(seconds: float) -> str:
     """HH:MM:SS（100 時間以上は時の桁が増える）"""
     s = int(max(seconds, 0))
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def fmt_remaining(seconds: float) -> str:
+    """前休止・後休止の残り時間。1 時間未満は m:ss、それ以上は h:mm:ss（端数は切り上げ）"""
+    s = int(math.ceil(max(seconds, 0) - 1e-9))
+    if s >= 3600:
+        return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def fmt_message(text: str, now: datetime | None = None) -> str:

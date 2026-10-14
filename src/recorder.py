@@ -17,7 +17,7 @@ FULL_VOLTAGES = ["4.1V", "4.2V"]
 
 CSV_ENCODING = "utf-8-sig"  # UTF-8 BOM 付き（Excel で文字化けしない）
 CSV_NEWLINE = "\r\n"
-COLUMNS = ["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]"]
+COLUMNS = ["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"]
 # ファイル名にはドットや大文字を使わない（拡張子の . を除く）
 PARTIAL_SUFFIX = "_partial.csv"
 LEGACY_PARTIAL_SUFFIX = ".partial.csv"  # v1.0.5 までの一時ファイル（起動時の検出だけに使う）
@@ -30,6 +30,11 @@ END_REASON_MANUAL = "手動停止"
 END_REASON_COMM_LOST = "通信断"
 END_REASON_WRITE_ERROR = "保存先書き込みエラー"
 END_REASON_ERROR = "異常終了"
+
+# 測定の区間（CSV の「区間」列）。前休止・後休止は負荷 OFF のまま電圧だけを記録する（オフセット）
+PHASE_PRE = "前休止"
+PHASE_DISCHARGE = "放電"
+PHASE_POST = "後休止"
 
 
 # ---- ファイル名 ----
@@ -168,6 +173,7 @@ class Sample:
     voltage_text: str = ""
     current_text: str = ""
     power_text: str = ""
+    phase: str = ""  # 区間（PHASE_PRE / PHASE_DISCHARGE / PHASE_POST）
 
     def row(self) -> list[str]:
         return [
@@ -178,6 +184,7 @@ class Sample:
             self.power_text or f"{self.power:.4f}",
             f"{self.mah:.3f}",
             f"{self.wh:.4f}",
+            self.phase,
         ]
 
 
@@ -247,12 +254,21 @@ class TestInfo:
     idn: str
     note: str
     number: str = ""
+    pre_rest: float = 0.0               # オフセット（前休止・後休止）[s]
+    post_rest: float = 0.0
+    pre_voltage: float | None = None    # 放電前電圧（前休止の最後）[V]
+    post_voltage: float | None = None   # 放電後電圧（後休止の最後）[V]
 
 
 def format_interval(value: float) -> str:
     """1.0 → '1.0'、0.25 → '0.25'（小数 1 桁以上・余分な 0 なし）"""
     text = f"{value:.3f}".rstrip("0")
     return text + "0" if text.endswith(".") else text
+
+
+def format_seconds(value: float) -> str:
+    """オフセットの秒数。10.0 → '10'、0.5 → '0.5'"""
+    return f"{value:g}"
 
 
 def info_lines(info: TestInfo) -> str:
@@ -271,6 +287,10 @@ def info_lines(info: TestInfo) -> str:
         ["放電容量[mAh]", f"{info.mah:.1f}"],
         ["電力量[Wh]", f"{info.wh:.3f}"],
         ["取得周期[s]", format_interval(info.interval)],
+        ["オフセット 放電前[s]", format_seconds(info.pre_rest)],
+        ["オフセット 放電後[s]", format_seconds(info.post_rest)],
+        ["放電前電圧[V]", f"{info.pre_voltage:.3f}" if info.pre_voltage is not None else ""],
+        ["放電後電圧[V]", f"{info.post_voltage:.3f}" if info.post_voltage is not None else ""],
         ["機器", info.idn],
     ]
     text = "".join(_csv_line(r) for r in rows)

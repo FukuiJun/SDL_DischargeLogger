@@ -113,12 +113,13 @@ def test_manual_stop_and_save_with_note(fake, tmp_path):
     assert not s.paths["partial"].exists()
     with open(result.csv_path, encoding="utf-8-sig", newline="") as fp:
         rows = list(csv.reader(fp))
-    info = {r[0]: r[1:] for r in rows[:15] if r}
+    info = {r[0]: r[1:] for r in rows[:rows.index([])] if r}
     assert info["備考"] == ["25℃恒温槽内。\n2回目"]
     assert info["型番"] == ["NCR18650B"]
-    header = rows.index(["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]"])
+    header = rows.index(["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"])
     data = rows[header + 1:]
     assert len(data) == len(s.snapshot()[0]) >= 3
+    assert {r[7] for r in data} == {"放電"}  # オフセットなしなら全部「放電」
     assert data[0][1] == "0.000"
     assert float(data[-1][5]) == pytest.approx(result.mah, abs=0.001)
 
@@ -365,3 +366,114 @@ def test_no_von_when_not_requested(fake, tmp_path):
     s.request_stop(save=False)
     s.wait(10)
     assert not any("VOLT" in c and "MEAS" not in c for c in fake.commands)
+
+
+# ---- オフセット（前休止・後休止） ----
+def wait_until(cond, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def rest_cond(pre=0.0, post=0.0):
+    return Conditions(None, None, "", 1.0, 3.0, 0.1, pre_rest=pre, post_rest=post)
+
+
+def test_pre_rest_keeps_load_off_then_discharges(fake, tmp_path):
+    """前休止：負荷 OFF のまま電圧を記録し、時間が来たら負荷 ON。放電容量は放電の区間だけで数える"""
+    s = make_session(fake, tmp_path, cond=rest_cond(pre=0.6))
+    s.start()
+    try:
+        assert s.phase == "前休止" and not fake.load_on
+        assert ":SOUR:CURR:LEV:IMM 1.000" in fake.commands  # CC の設定は開始時に済ませる
+        assert s.phase_remaining() is not None and s.phase_remaining() <= 0.6
+        assert wait_until(lambda: s.phase == "放電")
+        assert fake.load_on
+        assert wait_until(lambda: len([x for x in samples_so_far(s) if x.phase == "放電"]) >= 3)
+    finally:
+        s.request_stop(save=True)
+        result = s.wait(10)
+    rows = samples_so_far(s)
+    pre = [x for x in rows if x.phase == "前休止"]
+    dis = [x for x in rows if x.phase == "放電"]
+    assert len(pre) >= 5 and all(x.current == 0 and x.mah == 0 for x in pre)
+    assert pre[0].elapsed == 0.0  # 経過時間の 0 は測定開始
+    assert s.load_on_elapsed == pytest.approx(0.6, abs=0.15)
+    assert pre[-1].elapsed <= s.load_on_elapsed <= dis[0].elapsed  # ON の直前と直後を記録する
+    assert dis[0].mah == 0.0 and dis[-1].mah > 0
+    assert s.pre_voltage == pre[-1].voltage and s.post_voltage is None
+    assert s.markers() == [s.load_on_elapsed]
+    assert result.end_reason == "手動停止"
+    text = result.csv_path.read_text(encoding="utf-8-sig")
+    assert "オフセット 放電前[s],0.6" in text and f"放電前電圧[V],{s.pre_voltage:.3f}" in text
+    assert ",前休止" in text and ",放電" in text and ",後休止" not in text
+
+
+def samples_so_far(session):
+    """記録された全サンプル（events を読み、読んだ分を貯めておく）"""
+    store = session.__dict__.setdefault("_test_samples", [])
+    store.extend(samples(session))
+    return store
+
+
+def test_post_rest_records_recovery_then_finishes(fake, tmp_path):
+    """後休止：終止電圧で負荷を OFF にし、決めた時間だけ電圧を記録してから終止電圧到達として保存する"""
+    s = make_session(fake, tmp_path, cond=rest_cond(post=0.6))
+    s.start()
+    assert s.phase == "放電" and fake.load_on
+    fake.voltage_override = 2.9
+    assert wait_until(lambda: s.phase == "後休止")
+    assert not fake.load_on
+    mah = s.latest.mah
+    fake.voltage_override = None  # 負荷 OFF で電圧が戻る
+    result = s.wait(10)
+    assert result.end_reason == "終止電圧到達" and not result.stopped_by_user
+    rows = samples_so_far(s)
+    post = [x for x in rows if x.phase == "後休止"]
+    assert len(post) >= 5 and all(x.current == 0 and x.mah == mah for x in post)
+    assert post[-1].elapsed - s.load_off_elapsed == pytest.approx(0.6, abs=0.15)
+    assert s.post_voltage == post[-1].voltage > 3.0
+    assert result.mah == mah
+    assert s.markers() == [s.load_off_elapsed]
+    assert "放電後電圧: " in s.title_lines()[-1]
+    text = result.csv_path.read_text(encoding="utf-8-sig")
+    assert "オフセット 放電後[s],0.6" in text and ",後休止" in text
+    assert result.png_path.exists()
+
+
+def test_stop_during_post_rest_saves_as_cutoff(fake, tmp_path):
+    """後休止を［ON/OFF］（keep）で止めても、放電は終止電圧で終わっているので終止電圧到達として保存する"""
+    s = make_session(fake, tmp_path, cond=rest_cond(post=30))
+    s.start()
+    fake.voltage_override = 2.9
+    assert wait_until(lambda: s.phase == "後休止")
+    s.request_stop(save=False, keep=True)
+    result = s.wait(10)
+    assert result.end_reason == "終止電圧到達" and result.stopped_by_user
+    assert not result.pending and result.csv_path.exists()
+
+
+def test_stop_during_pre_rest_never_turns_load_on(fake, tmp_path):
+    s = make_session(fake, tmp_path, cond=rest_cond(pre=30, post=30))
+    s.start()
+    time.sleep(0.3)
+    s.request_stop(save=True)
+    result = s.wait(10)
+    assert result.end_reason == "手動停止" and result.mah == 0
+    assert ":SOUR:INP:STAT ON" not in fake.commands
+    assert s.markers() == []
+
+
+def test_pre_and_post_rest_title_lines(fake, tmp_path):
+    s = make_session(fake, tmp_path, cond=rest_cond(pre=0.3, post=0.3))
+    s.start()
+    assert wait_until(lambda: s.phase == "放電")
+    fake.voltage_override = 2.9
+    result = s.wait(10)
+    assert result.end_reason == "終止電圧到達"
+    assert len(s.markers()) == 2 and s.markers()[0] < s.markers()[1]
+    last = s.title_lines()[-1]
+    assert last == f"放電前電圧: {s.pre_voltage:.3f} V / 放電後電圧: {s.post_voltage:.3f} V"

@@ -5,7 +5,11 @@ GUI と CLI で共通に使う。測定は別スレッドで行い、進行は e
     ("status", str)             状況の文言（終止電圧到達など）
     ("reconnecting", (n, 総数)) 通信が途切れ、n 回目の再接続を試みている
     ("reconnected", None)       再接続して記録を再開した
+    ("phase", 区間)             区間が変わった（前休止 → 放電 → 後休止）
     ("finished", SessionResult) 終了（保存結果つき）
+
+オフセット（Conditions.pre_rest / post_rest）を入れると、負荷 OFF のまま電圧だけを記録する区間を
+放電の前（前休止）と、終止電圧で負荷を OFF にしたあと（後休止）に置く。経過時間の 0 は測定開始。
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ from pathlib import Path
 import plotting
 import recorder
 from recorder import (END_REASON_COMM_LOST, END_REASON_CUTOFF, END_REASON_ERROR, END_REASON_MANUAL,
-                      END_REASON_WRITE_ERROR, Integrator, PartialWriter, Sample, TestInfo)
+                      END_REASON_WRITE_ERROR, PHASE_DISCHARGE, PHASE_POST, PHASE_PRE, Integrator, PartialWriter,
+                      Sample, TestInfo)
 from sdl_client import SDLClient, SDLConnectionError, SDLError, SDLResponseError
 
 log = logging.getLogger("sdl.session")
@@ -46,6 +51,8 @@ class Conditions:
     interval: float
     von: float | None = None  # 開始時に SDL に設定する Von [V]（None なら設定しない）
     number: str = ""          # 番号（任意。半角の英数字と - _。ファイル名と CSV に入れる）
+    pre_rest: float = 0.0     # オフセット：放電の前に負荷 OFF のまま電圧を記録する時間 [s]（0 なら無し）
+    post_rest: float = 0.0    # オフセット：終止電圧で負荷を OFF にしたあと電圧を記録する時間 [s]（0 なら無し）
 
 
 @dataclass
@@ -59,6 +66,7 @@ class SessionResult:
     error: str | None = None
     save_ok: bool = True               # 直前の保存で CSV を作れたか
     load_off_ok: bool = True
+    stopped_by_user: bool = False      # 後休止を［ON/OFF］で途中で止めた（終了理由は終止電圧到達のまま）
     mah: float = 0.0
     wh: float = 0.0
     messages: list[str] = field(default_factory=list)
@@ -81,6 +89,13 @@ class DischargeSession:
         self.start_monotonic: float | None = None
         self.result: SessionResult | None = None
         self.latest: Sample | None = None
+        self.phase: str | None = None             # いまの区間（PHASE_PRE / PHASE_DISCHARGE / PHASE_POST）
+        self.phase_deadline: float | None = None  # 前休止・後休止が終わる時刻（time.monotonic）
+        self.load_on_elapsed: float | None = None   # 前休止のあと負荷を ON にした経過時間 [s]
+        self.load_off_elapsed: float | None = None  # 後休止の前に負荷を OFF にした経過時間 [s]
+        self.pre_voltage: float | None = None   # 放電前電圧（前休止の最後の電圧）
+        self.post_voltage: float | None = None  # 放電後電圧（後休止の最後の電圧）
+        self._invalid = 0
         self._integrator = Integrator()
         self._writer: PartialWriter | None = None
         self._measured: str | None = None  # 一時ファイルの内容。保存後も持っておき、もう一度保存するときに使う
@@ -110,11 +125,23 @@ class DischargeSession:
             return list(self._t), list(self._v), list(self._i)
 
     def title_lines(self) -> list[str]:
-        """PNG のタイトル（完了後は 3 行目に結果を入れる）"""
+        """PNG のタイトル（完了後は結果を入れる。オフセットを入れたときは放電前・放電後の電圧も）"""
         c, r = self.cond, self.result
+        rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage}
         if r is None or r.discarded:
-            return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff)
-        return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff, r.mah, r.wh, r.end_reason)
+            return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff, **rest)
+        return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff, r.mah, r.wh, r.end_reason,
+                                        **rest)
+
+    def markers(self) -> list[float]:
+        """グラフに縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）"""
+        return [t for t in (self.load_on_elapsed, self.load_off_elapsed) if t is not None]
+
+    def phase_remaining(self) -> float | None:
+        """前休止・後休止の残り時間 [s]（放電中・終了後は None）"""
+        if self.phase_deadline is None or self.finished:
+            return None
+        return max(self.phase_deadline - time.monotonic(), 0.0)
 
     # ---- 開始 ----
     def start(self) -> None:
@@ -139,11 +166,14 @@ class DischargeSession:
                 self._restore_von()
                 raise StartError(f"SDL に Von（{c.von:.3f} V）を設定できませんでした: {e}\n"
                                  "［Von を自動設定］のチェックを外すと、Von を設定せずに開始できます") from e
+        pre_rest = c.pre_rest > 0
         try:
             self.client.setup_cc(c.current)
-            self.client.set_load(True)
-            if not self.client.load_state():
-                raise StartError("負荷が ON になりません。SDL の状態を確認してください")
+            if not pre_rest:
+                self.client.set_load(True)
+                if not self.client.load_state():
+                    raise StartError("負荷が ON になりません。SDL の状態を確認してください")
+            # 前休止があるときは負荷 OFF のまま測り始める（負荷は前休止が終わってから ON にする）
             t0 = time.monotonic()
             start_time = datetime.now()
             first = self.client.measure()
@@ -156,6 +186,10 @@ class DischargeSession:
 
         self.start_monotonic = t0
         self.start_time = start_time
+        if pre_rest:
+            self.phase, self.phase_deadline = PHASE_PRE, t0 + c.pre_rest
+        else:
+            self.phase = PHASE_DISCHARGE
         try:
             self.run_dir = recorder.create_run_dir(self.folder, start_time)
         except OSError as e:
@@ -177,8 +211,9 @@ class DischargeSession:
             self._restore_von()
             raise StartError(f"一時ファイルを作れません: {self.paths['partial']}（{e}）") from e
 
-        log.info("放電開始 %s 電流 %.3fA 終止 %.3fV 周期 %gs 開始電圧 %.4fV", self.base_name, c.current,
-                 c.cutoff, c.interval, voltage)
+        log.info("%s %s 電流 %.3fA 終止 %.3fV 周期 %gs 開始電圧 %.4fV オフセット 前 %gs 後 %gs",
+                 "前休止開始" if pre_rest else "放電開始", self.base_name, c.current, c.cutoff, c.interval, voltage,
+                 c.pre_rest, c.post_rest)
         self._thread = threading.Thread(target=self._run, name="discharge", daemon=True)
         self._thread.start()
 
@@ -236,10 +271,18 @@ class DischargeSession:
 
     # ---- 測定スレッド ----
     def _record(self, timestamp: datetime, elapsed: float, m) -> Sample:
-        mah, wh = self._integrator.add(elapsed, m.current, m.power)
+        phase = self.phase
+        if phase == PHASE_DISCHARGE:
+            mah, wh = self._integrator.add(elapsed, m.current, m.power)
+        else:  # 放電容量・電力量は放電の区間だけで数える
+            mah, wh = self._integrator.mah, self._integrator.wh
         sample = Sample(timestamp, elapsed, m.voltage, m.current, m.power, mah, wh,
-                        m.voltage_text, m.current_text, m.power_text)
+                        m.voltage_text, m.current_text, m.power_text, phase)
         self._writer.append(sample)  # OSError は呼び出し側で処理
+        if phase == PHASE_PRE:
+            self.pre_voltage = m.voltage
+        elif phase == PHASE_POST:
+            self.post_voltage = m.voltage
         with self._data_lock:
             self._t.append(elapsed)
             self._v.append(m.voltage)
@@ -261,53 +304,119 @@ class DischargeSession:
 
     def _loop(self) -> None:
         c = self.cond
-        t0 = self.start_monotonic
-        below = 1 if self.latest.voltage <= c.cutoff else 0
-        invalid = 0
-        next_t = t0 + c.interval
+        below = 1 if self.phase == PHASE_DISCHARGE and self.latest.voltage <= c.cutoff else 0
+        next_t = self.start_monotonic + c.interval
         while True:
-            if below >= CUTOFF_CONSECUTIVE:
-                self._status("終止電圧に到達しました")
+            if self.phase == PHASE_DISCHARGE and below >= CUTOFF_CONSECUTIVE:
+                if c.post_rest <= 0:
+                    self._status("終止電圧に到達しました")
+                    self._finish(END_REASON_CUTOFF, save=True)
+                    return
+                if not self._begin_post_rest():
+                    return
+                below = 0
+                next_t = time.monotonic() + c.interval
+                continue
+            wake = next_t if self.phase_deadline is None else min(next_t, self.phase_deadline)
+            if self._stop_event.wait(max(wake - time.monotonic(), 0)):
+                self._finish_by_request()
+                return
+            if self.phase_deadline is not None and time.monotonic() >= self.phase_deadline:
+                if self.phase == PHASE_PRE:
+                    if not self._begin_discharge():
+                        return
+                    last = self.latest
+                    below = 1 if last.phase == PHASE_DISCHARGE and last.voltage <= c.cutoff else 0
+                    next_t = time.monotonic() + c.interval
+                    continue
+                # 後休止の終わり：最後の電圧を記録して終了
+                if self._sample() == "done":
+                    return
                 self._finish(END_REASON_CUTOFF, save=True)
                 return
-            delay = next_t - time.monotonic()
-            if self._stop_event.wait(max(delay, 0)):
-                self._finish(END_REASON_MANUAL, save=self._stop_save, keep=self._stop_keep)
+            outcome = self._sample()
+            if outcome == "done":
                 return
-            now = time.monotonic()
-            timestamp = datetime.now()
-            try:
-                m = self.client.measure()
-            except SDLResponseError as e:
-                invalid += 1
-                log.warning("数値でない応答（%d 回連続）: %s", invalid, e)
-                if invalid >= MAX_INVALID_RESPONSES:
-                    self._finish(END_REASON_COMM_LOST, save=True,
-                                 error=f"数値でない応答が {MAX_INVALID_RESPONSES} 回続いたため停止しました")
-                    return
-                next_t = _next_tick(next_t, c.interval)
-                continue
-            except SDLConnectionError as e:
-                log.warning("放電中に通信エラー: %s", e)
-                outcome = self._reconnect()
-                if outcome == "stopped":
-                    self._finish(END_REASON_MANUAL, save=self._stop_save, keep=self._stop_keep)
-                    return
-                if outcome != "ok":
-                    self._finish(END_REASON_COMM_LOST, save=True, error=outcome)
-                    return
-                next_t = _next_tick(next_t, c.interval)
-                continue
-            invalid = 0
-            try:
-                self._record(timestamp, now - t0, m)
-            except OSError as e:
-                log.error("一時ファイルに書き込めません: %s", e)
-                self._finish(END_REASON_WRITE_ERROR, save=True,
-                             error=f"保存先に書き込めなくなったため停止しました（{e}）")
-                return
-            below = below + 1 if m.voltage <= c.cutoff else 0
+            if outcome == "ok" and self.phase == PHASE_DISCHARGE:
+                below = below + 1 if self.latest.voltage <= c.cutoff else 0
             next_t = _next_tick(next_t, c.interval)
+
+    def _sample(self) -> str:
+        """1 回測って記録する。'ok' / 'skip'（今回は記録なし。続ける）/ 'done'（終了した）"""
+        now = time.monotonic()
+        timestamp = datetime.now()
+        try:
+            m = self.client.measure()
+        except SDLResponseError as e:
+            self._invalid += 1
+            log.warning("数値でない応答（%d 回連続）: %s", self._invalid, e)
+            if self._invalid >= MAX_INVALID_RESPONSES:
+                self._finish(END_REASON_COMM_LOST, save=True,
+                             error=f"数値でない応答が {MAX_INVALID_RESPONSES} 回続いたため停止しました")
+                return "done"
+            return "skip"
+        except SDLConnectionError as e:
+            log.warning("測定中に通信エラー: %s", e)
+            outcome = self._reconnect()
+            if outcome == "stopped":
+                self._finish_by_request()
+                return "done"
+            if outcome != "ok":
+                self._finish(END_REASON_COMM_LOST, save=True, error=outcome)
+                return "done"
+            return "skip"
+        self._invalid = 0
+        try:
+            self._record(timestamp, now - self.start_monotonic, m)
+        except OSError as e:
+            log.error("一時ファイルに書き込めません: %s", e)
+            self._finish(END_REASON_WRITE_ERROR, save=True,
+                         error=f"保存先に書き込めなくなったため停止しました（{e}）")
+            return "done"
+        return "ok"
+
+    def _set_phase(self, phase: str, deadline: float | None) -> None:
+        self.phase, self.phase_deadline = phase, deadline
+        self.events.put(("phase", phase))
+
+    def _begin_discharge(self) -> bool:
+        """前休止の終わり：負荷 ON の直前の電圧を記録してから負荷を ON にし、直後の電圧も記録する。
+        終了したら False"""
+        if self._sample() == "done":
+            return False
+        try:
+            self.client.set_load(True)
+            on = self.client.load_state()
+        except SDLError as e:
+            self._finish(END_REASON_ERROR, save=True, error=f"負荷を ON にできませんでした: {e}")
+            return False
+        if not on:
+            self._finish(END_REASON_ERROR, save=True, error="負荷が ON になりません。SDL の状態を確認してください")
+            return False
+        self.load_on_elapsed = time.monotonic() - self.start_monotonic
+        self._set_phase(PHASE_DISCHARGE, None)
+        log.info("前休止を終えて放電開始（経過 %.1fs、放電前電圧 %.4fV）", self.load_on_elapsed, self.pre_voltage)
+        return self._sample() != "done"
+
+    def _begin_post_rest(self) -> bool:
+        """終止電圧に到達：負荷を OFF にして後休止に入り、OFF 直後の電圧を記録する。終了したら False"""
+        if not self.client.load_off_safely():
+            self._status("終止電圧に到達しました")
+            self._finish(END_REASON_CUTOFF, save=True)  # 負荷 OFF の失敗は _finish が知らせる
+            return False
+        self.load_off_elapsed = time.monotonic() - self.start_monotonic
+        self._restore_von()
+        self._set_phase(PHASE_POST, time.monotonic() + self.cond.post_rest)
+        self._status("終止電圧に到達しました。後休止を記録しています")
+        log.info("終止電圧に到達。後休止 %gs（経過 %.1fs）", self.cond.post_rest, self.load_off_elapsed)
+        return self._sample() != "done"
+
+    def _finish_by_request(self) -> None:
+        """停止の依頼で終わる。後休止中なら放電は終止電圧で終わっているので、終止電圧到達として保存する"""
+        if self.phase == PHASE_POST and (self._stop_save or self._stop_keep):
+            self._finish(END_REASON_CUTOFF, save=True, by_user=True)
+        else:
+            self._finish(END_REASON_MANUAL, save=self._stop_save, keep=self._stop_keep)
 
     def _reconnect(self) -> str:
         """'ok'（復帰）/ 'stopped'（再接続中に停止の依頼）/ それ以外は失敗理由"""
@@ -322,16 +431,20 @@ class DischargeSession:
             except SDLError as e:
                 log.warning("再接続失敗（%d/%d）: %s", attempt, n, e)
                 continue
-            if not on:
+            if self.phase == PHASE_DISCHARGE and not on:
                 # SDL が再起動した等。負荷 OFF のまま記録を続けると終止電圧に達しないため止める
                 log.error("再接続後に負荷が OFF になっていました")
                 return "再接続後、SDL の負荷が OFF になっていたため停止しました"
+            if self.phase != PHASE_DISCHARGE and on:
+                log.warning("休止中なのに負荷が ON になっていたため OFF にします")
+                self.client.load_off_safely()
             log.info("再接続しました（%d/%d）", attempt, n)
             self.events.put(("reconnected", None))
             return "ok"
         return f"{n} 回再接続を試みましたが復帰しませんでした"
 
-    def _finish(self, reason: str, save: bool, error: str | None = None, keep: bool = False) -> None:
+    def _finish(self, reason: str, save: bool, error: str | None = None, keep: bool = False,
+                by_user: bool = False) -> None:
         load_off_ok = self.client.load_off_safely()
         if load_off_ok:
             self._restore_von()
@@ -339,8 +452,10 @@ class DischargeSession:
             self._writer.close()
         end_time = datetime.now()
         self._end_time = end_time
+        self.phase_deadline = None
         result = SessionResult(end_reason=reason, discarded=not save and not keep, pending=keep,
-                               load_off_ok=load_off_ok, mah=self._integrator.mah, wh=self._integrator.wh)
+                               load_off_ok=load_off_ok, stopped_by_user=by_user,
+                               mah=self._integrator.mah, wh=self._integrator.wh)
         if error:
             result.messages.append(error)
         if not load_off_ok:
@@ -377,7 +492,8 @@ class DischargeSession:
         info = TestInfo(start=self.start_time, end=end_time, end_reason=result.end_reason, maker=c.maker,
                         full_voltage=c.full_voltage, model=c.model, current=c.current, cutoff=c.cutoff,
                         mah=self._integrator.mah, wh=self._integrator.wh, interval=c.interval,
-                        idn=self.client.idn, note=self.note, number=c.number)
+                        idn=self.client.idn, note=self.note, number=c.number, pre_rest=c.pre_rest,
+                        post_rest=c.post_rest, pre_voltage=self.pre_voltage, post_voltage=self.post_voltage)
         partial = self.paths["partial"]
         try:
             if self._measured is None:
@@ -396,9 +512,10 @@ class DischargeSession:
         result.csv_path = paths["csv"]
         try:
             t, v, i = self.snapshot()
+            rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage}
             lines = plotting.png_title_lines(paths["csv"].stem, c.model, c.current, c.cutoff,
-                                             result.mah, result.wh, result.end_reason)
-            plotting.render_png(paths["png"], t, v, i, c.cutoff, c.current, lines)
+                                             result.mah, result.wh, result.end_reason, **rest)
+            plotting.render_png(paths["png"], t, v, i, c.cutoff, c.current, lines, markers=self.markers())
             result.png_path = paths["png"]
         except Exception as e:  # noqa: BLE001 - グラフ画像の失敗で CSV を失わない
             log.exception("グラフ画像を保存できません")

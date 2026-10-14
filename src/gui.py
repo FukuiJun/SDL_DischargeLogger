@@ -564,6 +564,23 @@ class App:
             c.pack(fill="x")
         self.cutoff_var.trace_add("write", lambda *_: self._update_von_text())
         self._update_von_text()
+        # オフセット：チェックしたときだけ秒数を編集でき、放電の前後に負荷 OFF のまま電圧を記録する
+        self.rest_var = tk.BooleanVar(value=self.settings.rest)
+        self.pre_rest_var = tk.StringVar(value=recorder.format_seconds(self.settings.pre_rest))
+        self.post_rest_var = tk.StringVar(value=recorder.format_seconds(self.settings.post_rest))
+        # 備考の欄を狭くしないよう、チェックと秒数の入力欄を 1 行に並べる
+        rest_row = tk.Frame(opts, bg=C["panel"])
+        rest_row.pack(fill="x", pady=(px(2), px(0)))
+        self.rest_chk = tk.Checkbutton(rest_row, text="オフセット [s]", variable=self.rest_var, **chk)
+        self.rest_chk.pack(side="left")
+        self.rest_boxes: list[BoxEntry] = []
+        for label, var in (("放電前", self.pre_rest_var), ("放電後", self.post_rest_var)):
+            tk.Label(rest_row, text=label, bg=C["panel"], fg=C["text-sub"], font=f.ui_px(12)).pack(
+                side="left", padx=(px(14), px(6)))
+            box = BoxEntry(rest_row, var, f.num_px(14), width=64, height=24, justify="right")
+            box.entry.configure(disabledforeground=C["text-disabled"])
+            box.frame.pack(side="left")
+            self.rest_boxes.append(box)
 
         memo_head = tk.Frame(body, bg=C["panel"])
         memo_head.pack(fill="x", pady=(px(12), px(6)))
@@ -653,20 +670,10 @@ class App:
         for box in (self.host_box, self.port_box):
             box.set_state("normal" if s == DISCONNECTED else "readonly")
 
-        # ②-1 ステータス行
-        load_on = s in (DISCHARGING, RECONNECTING, STOPPING)
+        # ②-1 ステータス行（前休止・後休止のあいだは負荷 OFF）
+        load_on = s in (DISCHARGING, RECONNECTING, STOPPING) and self._phase() in (None, recorder.PHASE_DISCHARGE)
         self.load_label.configure(text="LOAD ON" if load_on else "LOAD OFF")
-        state_text, state_color = {
-            DISCONNECTED: ("未接続", C["lcd-label"]),
-            CONNECTING: ("未接続", C["lcd-label"]),
-            IDLE: ("待機中", C["lcd-white"]) if self.idle_ok else ("応答なし", C["lcd-warn"]),
-            STARTING: ("開始しています…", C["lcd-white"]),
-            DISCHARGING: ("● 放電中", C["lcd-value"]),
-            RECONNECTING: ("通信断 — 再接続中", C["lcd-warn"]),
-            STOPPING: ("停止しています…", C["lcd-white"]),
-            DONE: (f"完了: {self.result.end_reason}" if self.result else "完了", C["lcd-white"]),
-        }[s]
-        self.state_label.configure(text=state_text, fg=state_color)
+        self._update_state_label()
         self.plan_label.configure(text=self._plan_text())
 
         # ③ 入力（放電中は備考のみ編集可）
@@ -677,6 +684,9 @@ class App:
             box.set_state("normal" if editable else "disabled")
         self.folder_btn.set_enabled(editable)
         self.auto_von_chk.configure(state="normal" if editable else "disabled")  # Von は開始時に設定する
+        self.rest_chk.configure(state="normal" if editable else "disabled")
+        for box in self.rest_boxes:
+            box.set_state("normal" if editable and self.rest_var.get() else "disabled")
         # 測定中は画面オフ・ロック・スリープを止める（チェックしたとき）
         power.keep_awake(self.keep_awake_var.get() and running)
 
@@ -694,6 +704,32 @@ class App:
         for label, value in zip(self.chip_values, display.chip_values(*self._shown_conditions())):
             label.configure(text=value, fg=C["lcd-dim"] if value == DASH else C["lcd-white"])
         self._render_values()
+
+    def _phase(self) -> str | None:
+        """測定中の区間（前休止・放電・後休止）。測定中でなければ None"""
+        s = self.session
+        if s is None or self.state not in (STARTING, DISCHARGING, RECONNECTING, STOPPING):
+            return None
+        return s.phase
+
+    def _update_state_label(self) -> None:
+        s = self.state
+        state_text, state_color = {
+            DISCONNECTED: ("未接続", C["lcd-label"]),
+            CONNECTING: ("未接続", C["lcd-label"]),
+            IDLE: ("待機中", C["lcd-white"]) if self.idle_ok else ("応答なし", C["lcd-warn"]),
+            STARTING: ("開始しています…", C["lcd-white"]),
+            DISCHARGING: ("● 放電中", C["lcd-value"]),
+            RECONNECTING: ("通信断 — 再接続中", C["lcd-warn"]),
+            STOPPING: ("停止しています…", C["lcd-white"]),
+            DONE: (f"完了: {self.result.end_reason}" if self.result else "完了", C["lcd-white"]),
+        }[s]
+        if s == DISCHARGING and self.session is not None and self._phase() in (recorder.PHASE_PRE,
+                                                                               recorder.PHASE_POST):
+            remaining = self.session.phase_remaining()
+            rest = f" 残り {display.fmt_remaining(remaining)}" if remaining is not None else ""
+            state_text, state_color = f"● {self._phase()}中{rest}", C["lcd-white"]
+        self.state_label.configure(text=state_text, fg=state_color)
 
     def _plan_text(self) -> str:
         s = self.session
@@ -862,9 +898,13 @@ class App:
         cutoff = parse_number(self.cutoff_var.get(), "終止電圧", *settings_mod.CUTOFF_RANGE, "V", 3)
         interval = parse_number(self.interval_var.get(), "取得周期", *settings_mod.INTERVAL_RANGE, "秒", 1)
         von = round(cutoff - VON_OFFSET_V, 3) if self.auto_von_var.get() else None
+        pre_rest = post_rest = 0.0
+        if self.rest_var.get():
+            pre_rest = parse_number(self.pre_rest_var.get(), "オフセット（放電前）", *settings_mod.REST_RANGE, "秒", 0)
+            post_rest = parse_number(self.post_rest_var.get(), "オフセット（放電後）", *settings_mod.REST_RANGE, "秒", 0)
         return Conditions(maker=self.maker_var.get() or None, full_voltage=self.full_var.get() or None,
                           model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval,
-                          von=von, number=self.number_var.get())
+                          von=von, number=self.number_var.get(), pre_rest=pre_rest, post_rest=post_rest)
 
     def _sanitize_number(self) -> None:
         text = self.number_var.get()
@@ -906,6 +946,9 @@ class App:
         self.current_var.set(f"{cond.current:.3f}")
         self.cutoff_var.set(f"{cond.cutoff:.3f}")
         self.interval_var.set(recorder.format_interval(cond.interval))
+        if self.rest_var.get():
+            self.pre_rest_var.set(recorder.format_seconds(cond.pre_rest))
+            self.post_rest_var.set(recorder.format_seconds(cond.post_rest))
         self._remember_settings()
         settings_mod.save(self.settings)
 
@@ -924,8 +967,26 @@ class App:
         self._graph_key = None
         self._set_state(DISCHARGING)
         c = session.cond
+        if session.phase == recorder.PHASE_PRE:
+            self.message(f"測定開始。負荷 OFF のまま {recorder.format_seconds(c.pre_rest)} 秒記録してから放電します")
+        else:
+            self._discharge_message(session)
+
+    def _discharge_message(self, session: DischargeSession) -> None:
+        c = session.cond
         von = f" / Von {c.von:.3f} V" if c.von is not None else ""
         self.message(f"放電開始（{c.current:.3f} A / 終止 {c.cutoff:.3f} V{von}）")
+
+    def _on_phase(self, phase: str) -> None:
+        """前休止 → 放電、放電 → 後休止 に変わった"""
+        self._refresh()
+        if self.session is None:
+            return
+        if phase == recorder.PHASE_DISCHARGE:
+            self._discharge_message(self.session)
+        elif phase == recorder.PHASE_POST:
+            self.message(f"終止電圧に到達しました。負荷 OFF のまま "
+                         f"{recorder.format_seconds(self.session.cond.post_rest)} 秒記録します（［ON/OFF］で終了）")
 
     def _on_start_failed(self, exc: BaseException) -> None:
         self.session = None
@@ -1037,15 +1098,15 @@ class App:
         try:
             if problems:
                 messagebox.showerror(APP_TITLE, full)
-            elif result.end_reason == recorder.END_REASON_CUTOFF:
+            elif result.end_reason == recorder.END_REASON_CUTOFF and not result.stopped_by_user:
                 messagebox.showinfo(APP_TITLE, full)
         finally:
             self._stop_alarm()  # ダイアログを閉じたら止める
 
     def _start_alarm(self, result, problems: bool) -> None:
         """［放電が終わったら音で知らせる］のとき、完了は完了の音、通信断・エラーは警告の音をくり返す"""
-        if not self.sound_var.get():
-            return
+        if not self.sound_var.get() or result.stopped_by_user:
+            return  # 後休止を［ON/OFF］で止めたときも鳴らさない
         if result.end_reason == recorder.END_REASON_CUTOFF and not problems:
             kind = notify.DONE
         elif problems or result.end_reason != recorder.END_REASON_MANUAL:
@@ -1067,6 +1128,8 @@ class App:
             s = self.session
             if self.state == DISCHARGING and s is not None and s.start_monotonic is not None:
                 self._set_values(elapsed=time.monotonic() - s.start_monotonic)
+                if s.phase_deadline is not None:
+                    self._update_state_label()  # 前休止・後休止の残り時間
         finally:
             try:
                 self.root.after(GRAPH_MS, self._graph_tick)
@@ -1082,16 +1145,22 @@ class App:
         current, cutoff, *_ = self._input_conditions()
         return [], [], [], cutoff, current
 
+    def _graph_markers(self) -> list[float]:
+        """負荷を ON・OFF にした時刻の縦線（オフセットを入れたとき）"""
+        s = self.session
+        return s.markers() if s is not None and self.state != DISCONNECTED else []
+
     def _draw_graph(self, force: bool = False) -> None:
         t, v, i, cutoff, current = self._graph_source()
         # 横軸が自動なら、放電が終わったあとは測定時間に合わせる（測定中は伸びていく分の余裕を持たせる）
         s = self.session
         fit = self.time_span is None and s is not None and s.finished and len(t) >= 2
-        key = (id(self.session), len(t), cutoff, current, self.time_span, fit)
+        markers = self._graph_markers()
+        key = (id(self.session), len(t), cutoff, current, self.time_span, fit, tuple(markers))
         if not force and key == self._graph_key:
             return
         self._graph_key = key
-        self.plot.update(t, v, i, cutoff, current, self.time_span, fit=fit)
+        self.plot.update(t, v, i, cutoff, current, self.time_span, fit=fit, markers=markers)
         self.canvas.draw_idle()
 
     def apply_span(self) -> None:
@@ -1119,7 +1188,7 @@ class App:
             path = folder / f"graph_{now:%Y%m%d_%H%M%S}.png"
             lines = plotting.png_title_lines(None, self.model_var.get().strip(), current, cutoff)
         try:
-            plotting.render_png(path, t, v, i, cutoff, current, lines)
+            plotting.render_png(path, t, v, i, cutoff, current, lines, markers=self._graph_markers())
         except Exception as e:  # noqa: BLE001
             log.exception("グラフを保存できません")
             self.message(f"グラフを保存できませんでした: {path}", "error")
@@ -1170,6 +1239,11 @@ class App:
         s.keep_awake = self.keep_awake_var.get()
         s.sound = self.sound_var.get()
         s.auto_von = self.auto_von_var.get()
+        s.rest = self.rest_var.get()
+        for name, var in (("pre_rest", self.pre_rest_var), ("post_rest", self.post_rest_var)):
+            value = try_number(var.get(), settings_mod.REST_RANGE)
+            if value is not None:
+                setattr(s, name, value)
 
     def ask_close_choice(self) -> str | None:
         """放電中に閉じようとしたとき。'save'（保存して終了）/ 'discard'（破棄して終了）/ None（キャンセル）"""
@@ -1247,6 +1321,8 @@ class App:
                     self._on_reconnecting(*payload)
                 elif kind == "reconnected":
                     self._on_reconnected()
+                elif kind == "phase":
+                    self._on_phase(payload)
                 elif kind == "finished":
                     self._on_finished(payload)
         finally:

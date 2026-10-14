@@ -1,7 +1,7 @@
 """設定ファイル（sdl_logger_settings.json）の読み書き
 
 保存する項目: IP、ポート、保存先フォルダ、放電電流、終止電圧、取得周期、
-オプション（測定中は画面を消さない・完了を音で知らせる・Von を自動設定）。
+オプション（測定中は画面を消さない・完了を音で知らせる・Von を自動設定・オフセット）。
 メーカー・満充電電圧・型番・備考は保存しない（前回の値が残って誤記録になるのを防ぐ）。
 """
 
@@ -22,6 +22,7 @@ DEFAULT_PORT = 5025
 CURRENT_RANGE = (0.001, 5.000)
 CUTOFF_RANGE = (2.000, 4.200)
 INTERVAL_RANGE = (0.2, 60.0)
+REST_RANGE = (0.0, 7200.0)  # オフセット（放電前・放電後に負荷 OFF のまま電圧を記録する時間）[s]
 PORT_RANGE = (1, 65535)
 
 
@@ -36,6 +37,9 @@ class Settings:
     keep_awake: bool = True  # 測定中は画面を消さない・ロックしない・スリープしない
     sound: bool = True       # 放電が終わったら音で知らせる
     auto_von: bool = True    # 開始時に Von を終止電圧 −0.1 V に設定する
+    rest: bool = False       # オフセットを設定する（チェックしたときだけ下の秒数を使う）
+    pre_rest: float = 0.0    # オフセット 放電前 [s]
+    post_rest: float = 0.0   # オフセット 放電後 [s]
 
 
 def _in_range(value, lo, hi) -> bool:
@@ -61,10 +65,11 @@ def load(path: Path | None = None) -> Settings:
         s.port = data["port"]
     if isinstance(data.get("folder"), str) and data["folder"] and Path(data["folder"]).is_dir():
         s.folder = data["folder"]
-    for name, rng in (("current", CURRENT_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE)):
+    for name, rng in (("current", CURRENT_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE),
+                      ("pre_rest", REST_RANGE), ("post_rest", REST_RANGE)):
         if _in_range(data.get(name), *rng):
             setattr(s, name, float(data[name]))
-    for name in ("keep_awake", "sound", "auto_von"):
+    for name in ("keep_awake", "sound", "auto_von", "rest"):
         if isinstance(data.get(name), bool):
             setattr(s, name, data[name])
     return s

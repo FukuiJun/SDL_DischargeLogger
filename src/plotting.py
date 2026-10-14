@@ -23,6 +23,7 @@ MAX_PLOT_POINTS = 5000
 PNG_SIZE_INCH = (16, 10)  # 100 dpi で 1600×1000 px
 PNG_DPI = 100
 CUTOFF_DASH = (0, (6, 5))  # 線 6・間隔 5
+MARKER_DASH = (0, (2, 3))  # 負荷を ON・OFF にした時刻の縦線（オフセットを入れたとき）
 
 # 画面のグラフの余白 [px]
 LCD_LEFT = 40
@@ -192,6 +193,15 @@ def current_ylim(set_current: float | None, currents: Sequence[float] = ()) -> t
     return 0.0, max(top, 0.001) * 1.5
 
 
+def _set_markers(axes, markers: Sequence[float], color: str, linewidth: float) -> None:
+    """負荷を ON・OFF にした経過時間 [s] に縦線を引き直す"""
+    for ax in axes:
+        for line in getattr(ax, "_sdl_marks", []):
+            line.remove()
+        ax._sdl_marks = [ax.axvline(t / 3600, color=color, linewidth=linewidth, linestyle=MARKER_DASH, zorder=1)
+                         for t in markers]
+
+
 def _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, *, suffix_h: bool,
                   span_hours: float | None = None, fit: bool = False) -> tuple[float, float, list[float]]:
     max_t = elapsed[-1] if len(elapsed) else 0.0
@@ -272,10 +282,12 @@ class LcdPlot:
 
     def update(self, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
                cutoff: float | None, set_current: float | None, span_hours: float | None = None,
-               fit: bool = False) -> None:
-        """span_hours: 横軸の幅［時間］。None なら自動。fit: 自動のとき測定時間に合わせる（放電が終わったあと）"""
+               fit: bool = False, markers: Sequence[float] = ()) -> None:
+        """span_hours: 横軸の幅［時間］。None なら自動。fit: 自動のとき測定時間に合わせる（放電が終わったあと）。
+        markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）"""
         xmin, xmax, values = _apply_common(self.ax_v, self.ax_i, elapsed, voltage, current, cutoff, set_current,
                                            suffix_h=True, span_hours=span_hours, fit=fit)
+        _set_markers((self.ax_v, self.ax_i), markers, C["lcd-label"], 1.0)
         self.legend.set_text(f"- - 終止電圧 {cutoff:.3f} V" if cutoff is not None else "")
         # 目盛り数字は Consolas。横軸の最初は左揃え・最後は右揃え（液晶の枠からはみ出さないように）
         for ax in (self.ax_v, self.ax_i):
@@ -289,8 +301,10 @@ class LcdPlot:
 
 # ---- PNG（白背景スタイル） ----
 def png_title_lines(base: str | None, model: str, current: float | None, cutoff: float | None,
-                    mah: float | None = None, wh: float | None = None, reason: str | None = None) -> list[str]:
-    """1 行目: ベース名、2 行目: 型番・放電電流・終止電圧（未入力は省く）、3 行目: 完了後の結果"""
+                    mah: float | None = None, wh: float | None = None, reason: str | None = None, *,
+                    pre_voltage: float | None = None, post_voltage: float | None = None) -> list[str]:
+    """1 行目: ベース名、2 行目: 型番・放電電流・終止電圧（未入力は省く）、次の行: 完了後の結果、
+    最後の行: オフセットを入れたときの放電前電圧・放電後電圧（測れたものだけ）"""
     lines = [base or "（未開始）"]
     second = []
     if model:
@@ -303,14 +317,23 @@ def png_title_lines(base: str | None, model: str, current: float | None, cutoff:
         lines.append(" / ".join(second))
     if reason is not None and mah is not None and wh is not None:
         lines.append(f"放電容量: {mah:.1f} mAh / 電力量: {wh:.3f} Wh / 終了理由: {reason}")
+    rest = []
+    if pre_voltage is not None:
+        rest.append(f"放電前電圧: {pre_voltage:.3f} V")
+    if post_voltage is not None:
+        rest.append(f"放電後電圧: {post_voltage:.3f} V")
+    if rest:
+        lines.append(" / ".join(rest))
     return lines
 
 
 def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
-               cutoff: float | None, set_current: float | None, title_lines: list[str]) -> Figure:
+               cutoff: float | None, set_current: float | None, title_lines: list[str],
+               markers: Sequence[float] = ()) -> Figure:
     """1600×1000 px の白背景 PNG を保存する（画面のグラフとは別の Figure で描く）。
 
     横軸はいつも測定全体に合わせる（画面の横軸の設定には関係なく、最初から最後までが収まる）。
+    markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）
     """
     setup_fonts()
     fig = Figure(figsize=PNG_SIZE_INCH, dpi=PNG_DPI, facecolor=C["png-bg"])
@@ -333,6 +356,7 @@ def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], c
     ax_v._sdl_cutoff = ax_v.axhline(float("nan"), color=C["png-cutoff"], linewidth=1.5, linestyle=CUTOFF_DASH)
     ax_i.yaxis.set_major_formatter(FuncFormatter(lambda y, _p: f"{y:.2f}"))
     _apply_common(ax_v, ax_i, elapsed, voltage, current, cutoff, set_current, suffix_h=False, fit=True)
+    _set_markers((ax_v, ax_i), markers, C["png-text"], 1.2)
     if cutoff is not None:
         ax_v.text(1.0, cutoff, f"終止電圧 {cutoff:.3f} V", transform=ax_v.get_yaxis_transform(),
                   ha="right", va="bottom", color=C["png-cutoff"], fontsize=11,

@@ -33,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default="", help="型番")
     ap.add_argument("--number", default="", help="番号（半角の英数字と - _。ファイル名の末尾に _no<番号>）")
     ap.add_argument("--note", default="", help="備考")
+    ap.add_argument("--pre-rest", type=float, default=0.0, help="オフセット 放電前 [s]（負荷 OFF のまま電圧を記録）")
+    ap.add_argument("--post-rest", type=float, default=0.0, help="オフセット 放電後 [s]（終止電圧で負荷 OFF にしたあと）")
     args = ap.parse_args(argv)
 
     applog.setup()
@@ -43,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         print("接続:", client.connect())
         session = DischargeSession(client, args.folder,
                                    Conditions(args.maker, args.full, args.model, args.current, args.cutoff,
-                                              args.interval, number=recorder.sanitize_number(args.number)),
+                                              args.interval, number=recorder.sanitize_number(args.number),
+                                              pre_rest=args.pre_rest, post_rest=args.post_rest),
                                    note=args.note)
         session.start()
     except (SDLError, StartError) as e:
@@ -51,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         client.close()
         return 1
 
-    print(f"放電開始: {session.base_name}（Ctrl+C で停止・保存）")
+    print(f"測定開始: {session.base_name}（区間: {session.phase}。Ctrl+C で停止・保存）")
     try:
         while True:
             try:
@@ -64,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                       f"{s.mah:8.1f}mAh  {s.wh:.3f}Wh")
             elif kind == "status":
                 print(payload)
+            elif kind == "phase":
+                print(f"区間: {payload}")
             elif kind == "reconnecting":
                 print(f"通信が途切れました。再接続しています（{payload[0]}/{payload[1]}）")
             elif kind == "reconnected":

@@ -17,7 +17,8 @@ def test_roundtrip_only_allowed_keys(app_dir, tmp_path):
                           interval=0.5)
     assert settings.save(s)
     data = json.loads((app_dir / "sdl_logger_settings.json").read_text(encoding="utf-8"))
-    assert set(data) == {"host", "port", "folder", "current", "cutoff", "interval", "keep_awake", "sound", "auto_von"}
+    assert set(data) == {"host", "port", "folder", "current", "cutoff", "interval", "keep_awake", "sound",
+                         "auto_von", "rest", "pre_rest", "post_rest"}
     assert settings.load() == s
 
 

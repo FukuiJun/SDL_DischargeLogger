@@ -166,3 +166,24 @@ def test_png_axis_long_discharge_uses_hmm(tmp_path):
     fig = plotting.render_png(tmp_path / "l.png", t, [4.0] * len(t), [1.0] * len(t), 3.0, 1.0, ["x"])
     assert fig.axes[1].get_xlim() == pytest.approx((0.0, 3.5))
     assert fig.axes[1].get_xlabel() == "経過時間 [h:mm]"
+
+
+def test_png_title_lines_with_rest_voltages():
+    lines = plotting.png_title_lines("b", "M", 1.0, 3.0, 100.0, 0.4, "終止電圧到達", pre_voltage=4.1504,
+                                     post_voltage=3.41)
+    assert lines[-1] == "放電前電圧: 4.150 V / 放電後電圧: 3.410 V"
+    only_pre = plotting.png_title_lines("b", "M", 1.0, 3.0, pre_voltage=4.15)
+    assert only_pre[-1] == "放電前電圧: 4.150 V"
+    assert plotting.png_title_lines("b", "M", 1.0, 3.0)[-1].startswith("型番")  # オフセットなしなら出さない
+
+
+def test_png_markers(tmp_path):
+    """オフセットを入れたとき、負荷を ON・OFF にした時刻に縦線を引く"""
+    t = [float(k) for k in range(0, 200, 2)]
+    fig = plotting.render_png(tmp_path / "m.png", t, [4.0] * len(t), [0.0] * len(t), 3.0, 1.0, ["x"],
+                              markers=[10.0, 150.0])
+    ax_v, ax_i = fig.axes[:2]
+    for ax in (ax_v, ax_i):
+        assert [line.get_xdata()[0] * 3600 for line in ax._sdl_marks] == pytest.approx([10.0, 150.0])
+    fig2 = plotting.render_png(tmp_path / "n.png", t, [4.0] * len(t), [0.0] * len(t), 3.0, 1.0, ["x"])
+    assert fig2.axes[0]._sdl_marks == []
