@@ -165,7 +165,7 @@ class DischargeSession:
             except SDLError as e:
                 self._restore_von()
                 raise StartError(f"SDL に Von（{c.von:.3f} V）を設定できませんでした: {e}\n"
-                                 "［Von を自動設定］のチェックを外すと、Von を設定せずに開始できます") from e
+                                 "［負荷側終止電圧］のチェックを外すと、Von を設定せずに開始できます") from e
         pre_rest = c.pre_rest > 0
         try:
             self.client.setup_cc(c.current)

@@ -71,7 +71,7 @@ CLOSE_QUESTION = "放電中です。停止・保存して終了しますか？"
 # 設定の間違いを防ぐため、放電電流がこの値以上・終止電圧がこの値以下なら開始前に確認する
 CONFIRM_CURRENT_A = 2.0
 CONFIRM_CUTOFF_V = 3.0
-VON_OFFSET_V = 0.1  # ［Von を自動設定］のとき Von = 終止電圧 − 0.1 V
+VON_OFFSET_V = 0.1  # ［負荷側終止電圧］のとき SDL の Von = 終止電圧 − 0.1 V
 CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了（データは残りません）\nキャンセル: 放電を続ける"
 
 
@@ -557,8 +557,8 @@ class App:
         chk = {"bg": C["panel"], "fg": C["text"], "activebackground": C["panel"], "activeforeground": C["text"],
                "selectcolor": C["input-bg"], "font": f.ui_px(12), "highlightthickness": 0, "bd": 0,
                "anchor": "w", "padx": 0, "pady": px(1), "command": self._on_option_changed}
-        self.keep_awake_chk = tk.Checkbutton(opts, text="測定中は画面を消さない・ロックしない", variable=self.keep_awake_var, **chk)
-        self.sound_chk = tk.Checkbutton(opts, text="放電が終わったら音で知らせる", variable=self.sound_var, **chk)
+        self.keep_awake_chk = tk.Checkbutton(opts, text="測定中継続表示", variable=self.keep_awake_var, **chk)
+        self.sound_chk = tk.Checkbutton(opts, text="測定終了音", variable=self.sound_var, **chk)
         self.auto_von_chk = tk.Checkbutton(opts, textvariable=self.von_text, variable=self.auto_von_var, **chk)
         for c in (self.keep_awake_chk, self.sound_chk, self.auto_von_chk):
             c.pack(fill="x")
@@ -914,8 +914,8 @@ class App:
 
     def _update_von_text(self) -> None:
         cutoff = try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE)
-        detail = f" = {cutoff - VON_OFFSET_V:.3f} V" if cutoff is not None else ""
-        self.von_text.set(f"Von を自動設定（終止電圧 − {VON_OFFSET_V:.1f} V{detail}）")
+        detail = f"={cutoff - VON_OFFSET_V:.3f}V" if cutoff is not None else ""
+        self.von_text.set(f"負荷側終止電圧(終止電圧-{VON_OFFSET_V:.1f}V{detail})")
 
     def _on_option_changed(self) -> None:
         self._refresh()
@@ -1104,7 +1104,7 @@ class App:
             self._stop_alarm()  # ダイアログを閉じたら止める
 
     def _start_alarm(self, result, problems: bool) -> None:
-        """［放電が終わったら音で知らせる］のとき、完了は完了の音、通信断・エラーは警告の音をくり返す"""
+        """［測定終了音］のとき、完了は完了の音、通信断・エラーは警告の音をくり返す"""
         if not self.sound_var.get() or result.stopped_by_user:
             return  # 後休止を［ON/OFF］で止めたときも鳴らさない
         if result.end_reason == recorder.END_REASON_CUTOFF and not problems:

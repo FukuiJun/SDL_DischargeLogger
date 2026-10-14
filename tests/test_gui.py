@@ -573,11 +573,11 @@ def test_option_checkboxes(make_app, fake, tmp_path, app_dir):
     """オプションは初期値 ON。Von の表示は終止電圧 −0.1 V。放電中は Von だけ変えられない。設定は保存される"""
     app = make_app()
     assert app.keep_awake_var.get() and app.sound_var.get() and app.auto_von_var.get()
-    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V = 3.400 V）"
+    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V=3.400V)"
     app.cutoff_var.set("3.2")
-    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V = 3.100 V）"
+    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V=3.100V)"
     app.cutoff_var.set("abc")
-    assert app.von_text.get() == "Von を自動設定（終止電圧 − 0.1 V）"
+    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V)"
     app.cutoff_var.set("3.500")
     assert app.read_conditions().von == 3.4
     app.auto_von_chk.invoke()
@@ -619,7 +619,7 @@ def test_von_failure_message(make_app, fake, dialogs, tmp_path):
 
 
 def test_keep_awake_while_discharging(make_app, fake, tmp_path, monkeypatch):
-    """［測定中は画面を消さない・ロックしない］：放電中だけ ON。チェックを外すとすぐ元に戻す"""
+    """［測定中継続表示］：放電中だけ ON。チェックを外すとすぐ元に戻す"""
     import power
 
     calls = []

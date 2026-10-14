@@ -48,7 +48,7 @@ def test_icon_files():
 
 
 def test_options_default_on_and_saved(app_dir):
-    """オプション（画面を消さない・音で知らせる・Von を自動設定）は初期値 ON。変えたら保存される"""
+    """オプション（測定中継続表示・測定終了音・負荷側終止電圧）は初期値 ON。変えたら保存される"""
     s = settings.load()
     assert s.keep_awake and s.sound and s.auto_von
     s.keep_awake, s.sound, s.auto_von = False, False, False

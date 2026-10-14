@@ -1,7 +1,7 @@
 """設定ファイル（sdl_logger_settings.json）の読み書き
 
 保存する項目: IP、ポート、保存先フォルダ、放電電流、終止電圧、取得周期、
-オプション（測定中は画面を消さない・完了を音で知らせる・Von を自動設定・オフセット）。
+オプション（測定中継続表示・測定終了音・負荷側終止電圧・オフセット）。
 メーカー・満充電電圧・型番・備考は保存しない（前回の値が残って誤記録になるのを防ぐ）。
 """
 
@@ -34,9 +34,9 @@ class Settings:
     current: float = 0.400  # 初めて起動したとき（設定ファイルが無いとき）の放電電流
     cutoff: float = 3.500   # 同じく終止電圧
     interval: float = 1.0
-    keep_awake: bool = True  # 測定中は画面を消さない・ロックしない・スリープしない
-    sound: bool = True       # 放電が終わったら音で知らせる
-    auto_von: bool = True    # 開始時に Von を終止電圧 −0.1 V に設定する
+    keep_awake: bool = True  # ［測定中継続表示］測定中は画面を消さない・ロックしない・スリープしない
+    sound: bool = True       # ［測定終了音］放電が終わったら音で知らせる
+    auto_von: bool = True    # ［負荷側終止電圧］開始時に SDL の Von を終止電圧 −0.1 V に設定する
     rest: bool = False       # オフセットを設定する（チェックしたときだけ下の秒数を使う）
     pre_rest: float = 0.0    # オフセット 放電前 [s]
     post_rest: float = 0.0   # オフセット 放電後 [s]
