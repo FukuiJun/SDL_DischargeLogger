@@ -9,6 +9,7 @@
 アプリの IP を 127.0.0.1 にして接続する。Ctrl+C で終了。
 
 テストからは FakeSDL クラスを直接使う（port=0 で空きポート）。
+CC（FUNC CURR）と CP（FUNC POW。電流 = 電力 ÷ 電圧 になるように流す）を模擬する。
 受信したコマンドは commands に記録され、voltage_override・garbage・silent で異常を模擬できる。
 """
 
@@ -78,6 +79,7 @@ class FakeSDL:
         self.function = "CURR"
         self.irange = 5.0
         self.set_current = 0.0
+        self.set_power = 0.0    # CP モードの電力
         self.load_on = False
         self.von = 0.0          # Von（この電圧より下では電流を流さない）
         self.von_latch = True   # Von Latch。OFF なら電圧が Von を下回ると電流を止める
@@ -191,16 +193,26 @@ class FakeSDL:
         now = time.monotonic()
         dt = (now - self._last) * self.speed
         self._last = now
-        if self.load_on and self.function == "CURR":
+        if self.load_on and self.function in ("CURR", "POW"):
             self.remaining_mah = max(0.0, self.remaining_mah - self._actual_current() * dt / 3.6)
 
     def _actual_current(self) -> float:
         v = ocv(self.remaining_mah / self.capacity_mah)
         if not self.load_on or v < 1.0:
             return 0.0
-        if not self.von_latch and v - self.set_current * self.resistance < self.von:
+        current = self.set_current
+        if self.function == "POW":
+            # 電力が一定：I × (OCV − I × R) = P を解く（電力が大きすぎて解が無ければ取り出せる最大の電力）
+            r = self.resistance
+            if r <= 0:
+                current = self.set_power / v
+            else:
+                d = v * v - 4 * r * self.set_power
+                current = v / (2 * r) if d < 0 else (v - d ** 0.5) / (2 * r)
+            current = min(current, self.irange)
+        if not self.von_latch and v - current * self.resistance < self.von:
             return 0.0  # Von Latch OFF：電圧が Von を下回ったら流さない
-        return self.set_current
+        return current
 
     def _values(self) -> tuple[float, float, float]:
         current = self._actual_current()
@@ -234,13 +246,18 @@ class FakeSDL:
                     return f"{i:.4f}"
                 return f"{p:.4f}"
             if cmd == "FUNC":
-                self.function = arg[:4]
+                self.function = "POW" if arg.startswith("POW") else arg[:4]
                 return None
             if cmd == "FUNC?":
                 return self.function
-            if cmd == "CURR:IRANG":
+            if cmd in ("CURR:IRANG", "POW:IRANG"):
                 self.irange = float(arg)
                 return None
+            if cmd in ("POW:LEV:IMM", "POW:LEV", "POW"):
+                self.set_power = float(arg)
+                return None
+            if cmd in ("POW:LEV:IMM?", "POW:LEV?", "POW?"):
+                return f"{self.set_power:.3f}"
             if cmd in ("CURR:LEV:IMM", "CURR:LEV", "CURR"):
                 self.set_current = float(arg)
                 return None

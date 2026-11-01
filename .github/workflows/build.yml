@@ -179,7 +179,7 @@ jobs:
           PC と SDL1020X-E の LAN 設定・使い方は同梱の README.md を参照してください。
 
           ## 注意
-          - CC 設定・負荷 ON/OFF・Von の SCPI コマンド（SPEC.md Q-02）は実機での確認前です。
+          - CC・CP 設定・負荷 ON/OFF・Von の SCPI コマンド（SPEC.md Q-02）は実機での確認前です。
             Von を設定できないと表示されたら、［負荷側終止電圧］のチェックを外すと今までどおり使えます。
             うまく動かないときは、exe と同じフォルダの sdl_logger.log を添えて連絡してください
           "@

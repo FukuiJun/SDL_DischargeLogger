@@ -54,11 +54,14 @@ def fmt_message(text: str, now: datetime | None = None) -> str:
     return f"{(now or datetime.now()):%H:%M:%S} {text}"
 
 
-def chip_values(current: float | None, cutoff: float | None, interval: float | None,
-                full_voltage: str | None, maker: str | None) -> list[str]:
-    """②-6 条件チップの値（電流 / 終止電圧 / 取得周期 / 満充電 / メーカー）。未選択・未入力は ---"""
+def chip_values(setpoint: float | None, cutoff: float | None, interval: float | None,
+                full_voltage: str | None, maker: str | None, mode: str = recorder.MODE_CC) -> list[str]:
+    """②-6 条件チップの値（電流または電力 / 終止電圧 / 取得周期 / 満充電 / メーカー）。未選択・未入力は ---
+
+    setpoint は CC モードなら放電電流 [A]、CP モードなら放電電力 [W]"""
+    fmt = fmt_power if mode == recorder.MODE_CP else fmt_current
     return [
-        fmt_current(current) if current is not None else DASH,
+        fmt(setpoint) if setpoint is not None else DASH,
         fmt_voltage(cutoff) if cutoff is not None else DASH,
         f"{recorder.format_interval(interval)} s" if interval is not None else DASH,
         f"{full_voltage[:-1]} V" if full_voltage else DASH,
@@ -66,13 +69,8 @@ def chip_values(current: float | None, cutoff: float | None, interval: float | N
     ]
 
 
-def planned_name_pattern(full_voltage: str | None, maker: str | None, number: str | None = None) -> str:
+def planned_name_pattern(full_voltage: str | None, maker: str | None, number: str | None = None,
+                         mode: str = recorder.MODE_CC) -> str:
     """待機中の「保存予定」に出すパターン（出力フォルダ YYYYMMDD_HHMM_SDL の中のファイル名）"""
-    parts = ["YYYYMMDD_HHMM"]
-    if full_voltage:
-        parts.append(recorder.full_voltage_tag(full_voltage))
-    if maker:
-        parts.append(recorder.MAKER_ABBR[maker])
-    if number:
-        parts.append("no" + number)
+    parts = recorder.name_parts("YYYYMMDD_HHMM", full_voltage, maker, number, mode)
     return str(Path("YYYYMMDD_HHMM" + recorder.RUN_DIR_SUFFIX) / ("_".join(parts) + ".csv"))

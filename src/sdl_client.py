@@ -213,6 +213,15 @@ class SDLClient:
             self.write(f":SOUR:CURR:IRANG {current_range_for(current)}")
             self.write(f":SOUR:CURR:LEV:IMM {current:.3f}")
 
+    def setup_cp(self, power: float, max_current: float) -> None:
+        """CP モード・電流レンジ・電力値を設定する（負荷は ON にしない）。
+
+        max_current は流れうる最大の電流（電力 ÷ 終止電圧）。電流レンジはこれに合わせる"""
+        with self._lock:
+            self.write(":SOUR:FUNC POW")
+            self.write(f":SOUR:POW:IRANG {current_range_for(max_current)}")
+            self.write(f":SOUR:POW:LEV:IMM {power:.3f}")
+
     def set_load(self, on: bool) -> None:
         with self._lock:
             if on:

@@ -1,4 +1,4 @@
-"""グラフ（上段: 電圧、下段: 電流、横軸: 経過時間）の描画と PNG 保存
+"""グラフ（上段: 電圧、下段: 電流（CP モードは電力）、横軸: 経過時間）の描画と PNG 保存
 
 画面は液晶スタイル（黒背景、docs/design/DESIGN.md 10.1）、PNG は報告書向けの白背景（10.2）。
 pyplot は使わず matplotlib.figure.Figure を直接使う（PNG は画面とは別の Figure で描くので、
@@ -32,6 +32,10 @@ LCD_TOP = 22          # 電圧グラフの上（見出し「電圧 [V]」の分�
 LCD_BOTTOM = 20       # 時間軸の目盛り数字の分
 LCD_GAP = 28          # 電圧グラフと電流グラフの間（見出し「電流 [A]」の分）
 LCD_CURRENT_H = 92    # 電流グラフの高さ
+
+# 下段グラフの見出し。CC モードは電流、CP モードは電力（どちらも設定した量）
+LOWER_CURRENT = "電流 [A]"
+LOWER_POWER = "電力 [W]"
 
 _fonts: dict[str, list[str]] = {}
 
@@ -186,7 +190,7 @@ def voltage_axis(cutoff: float | None, voltages: Sequence[float]) -> tuple[float
 
 
 def current_ylim(set_current: float | None, currents: Sequence[float] = ()) -> tuple[float, float]:
-    """0 〜 放電電流設定値 × 1.5（設定が無いときはデータの最大から決める）"""
+    """0 〜 放電電流設定値 × 1.5（設定が無いときはデータの最大から決める）。CP モードの電力も同じ"""
     if set_current:
         return 0.0, set_current * 1.5
     top = max(currents) if len(currents) else 1.0
@@ -265,7 +269,9 @@ class LcdPlot:
                                                   linestyle=CUTOFF_DASH)
         self.ax_v.set_title("電圧 [V]", loc="left", pad=6, color=C["lcd-label"], fontsize=head)
         self.legend = self.ax_v.set_title("", loc="right", pad=6, color=C["lcd-cutoff"], fontsize=head)
-        self.ax_i.set_title("電流 [A]", loc="left", pad=6, color=C["lcd-label"], fontsize=head)
+        self._head = head
+        self._lower = LOWER_CURRENT
+        self.ax_i.set_title(self._lower, loc="left", pad=6, color=C["lcd-label"], fontsize=head)
         self.layout()
         self.update([], [], [], None, None)
 
@@ -282,9 +288,13 @@ class LcdPlot:
 
     def update(self, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
                cutoff: float | None, set_current: float | None, span_hours: float | None = None,
-               fit: bool = False, markers: Sequence[float] = ()) -> None:
+               fit: bool = False, markers: Sequence[float] = (), lower: str = LOWER_CURRENT) -> None:
         """span_hours: 横軸の幅［時間］。None なら自動。fit: 自動のとき測定時間に合わせる（放電が終わったあと）。
-        markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）"""
+        markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）。
+        lower: 下段の見出し（LOWER_CURRENT / LOWER_POWER）。current・set_current はその量の値と設定値"""
+        if lower != self._lower:
+            self._lower = lower
+            self.ax_i.set_title(lower, loc="left", pad=6, color=C["lcd-label"], fontsize=self._head)
         xmin, xmax, values = _apply_common(self.ax_v, self.ax_i, elapsed, voltage, current, cutoff, set_current,
                                            suffix_h=True, span_hours=span_hours, fit=fit)
         _set_markers((self.ax_v, self.ax_i), markers, C["lcd-label"], 1.0)
@@ -302,15 +312,18 @@ class LcdPlot:
 # ---- PNG（白背景スタイル） ----
 def png_title_lines(base: str | None, model: str, current: float | None, cutoff: float | None,
                     mah: float | None = None, wh: float | None = None, reason: str | None = None, *,
-                    pre_voltage: float | None = None, post_voltage: float | None = None) -> list[str]:
-    """1 行目: ベース名、2 行目: 型番・放電電流・終止電圧（未入力は省く）、次の行: 完了後の結果、
-    最後の行: オフセットを入れたときの放電前電圧・放電後電圧（測れたものだけ）"""
+                    pre_voltage: float | None = None, post_voltage: float | None = None,
+                    power: float | None = None) -> list[str]:
+    """1 行目: ベース名、2 行目: 型番・放電電流（CP モードは放電電力）・終止電圧（未入力は省く）、
+    次の行: 完了後の結果、最後の行: オフセットを入れたときの放電前電圧・放電後電圧（測れたものだけ）"""
     lines = [base or "（未開始）"]
     second = []
     if model:
         second.append(f"型番: {model}")
     if current is not None:
         second.append(f"放電電流: {current:.3f} A")
+    if power is not None:
+        second.append(f"放電電力: {power:.3f} W")
     if cutoff is not None:
         second.append(f"終止電圧: {cutoff:.3f} V")
     if second:
@@ -329,11 +342,12 @@ def png_title_lines(base: str | None, model: str, current: float | None, cutoff:
 
 def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], current: Sequence[float],
                cutoff: float | None, set_current: float | None, title_lines: list[str],
-               markers: Sequence[float] = ()) -> Figure:
+               markers: Sequence[float] = (), lower: str = LOWER_CURRENT) -> Figure:
     """1600×1000 px の白背景 PNG を保存する（画面のグラフとは別の Figure で描く）。
 
     横軸はいつも測定全体に合わせる（画面の横軸の設定には関係なく、最初から最後までが収まる）。
-    markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）
+    markers: 縦線を引く経過時間 [s]（オフセットを入れたとき、負荷を ON・OFF にした時刻）。
+    lower: 下段の縦軸名（LOWER_CURRENT / LOWER_POWER）。current・set_current はその量の値と設定値
     """
     setup_fonts()
     fig = Figure(figsize=PNG_SIZE_INCH, dpi=PNG_DPI, facecolor=C["png-bg"])
@@ -362,7 +376,7 @@ def render_png(path: Path, elapsed: Sequence[float], voltage: Sequence[float], c
                   ha="right", va="bottom", color=C["png-cutoff"], fontsize=11,
                   bbox={"facecolor": C["png-bg"], "edgecolor": "none", "pad": 2})
     ax_v.set_ylabel("電圧 [V]", color=C["png-text"], fontsize=13)
-    ax_i.set_ylabel("電流 [A]", color=C["png-text"], fontsize=13)
+    ax_i.set_ylabel(lower, color=C["png-text"], fontsize=13)
     xlabel = "経過時間 [分:秒]" if uses_seconds(ax_i._sdl_step) else "経過時間 [h:mm]"
     ax_i.set_xlabel(xlabel, color=C["png-text"], fontsize=13)
     n = len(title_lines)

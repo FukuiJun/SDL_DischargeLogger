@@ -99,6 +99,20 @@ def test_setup_cc_and_load(fake):
     assert not client.load_requested
 
 
+def test_setup_cp_and_load(fake):
+    """CP モード：FUNC POW・電流レンジ（終止電圧のときの電流で決める）・電力値。電流は 電力 ÷ 電圧 で流れる"""
+    client = SDLClient("127.0.0.1", fake.port)
+    client.connect()
+    client.setup_cp(2.0, 2.0 / 3.0)
+    client.query("*IDN?")
+    assert fake.commands[-4:-1] == [":SOUR:FUNC POW", ":SOUR:POW:IRANG 5", ":SOUR:POW:LEV:IMM 2.000"]
+    client.set_load(True)
+    m = client.measure()
+    assert m.power == pytest.approx(2.0, abs=0.01)
+    assert m.current == pytest.approx(2.0 / m.voltage, rel=0.01)
+    client.set_load(False)
+
+
 def test_current_range():
     assert current_range_for(5.0) == 5
     assert current_range_for(0.001) == 5

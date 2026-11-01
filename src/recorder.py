@@ -15,6 +15,12 @@ MAKERS = ["Panasonic", "マクセル"]
 MAKER_ABBR = {"Panasonic": "pana", "マクセル": "maxell"}
 FULL_VOLTAGES = ["4.1V", "4.2V"]
 
+# 放電モード。CC: 電流を一定に（定電流）、CP: 電力を一定に（定電力）
+MODE_CC = "CC"
+MODE_CP = "CP"
+MODES = [MODE_CC, MODE_CP]
+MODE_TAGS = {MODE_CP: "cp"}  # ファイル名の末尾に付ける（CC は付けない）
+
 CSV_ENCODING = "utf-8-sig"  # UTF-8 BOM 付き（Excel で文字化けしない）
 CSV_NEWLINE = "\r\n"
 COLUMNS = ["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"]
@@ -48,17 +54,25 @@ def sanitize_number(text: str) -> str:
 
 
 def make_base_name(start: datetime, full_voltage: str | None = None, maker: str | None = None,
-                   number: str | None = None) -> str:
-    """<YYYYMMDD_HHMM>[_<満充電電圧 4v1 など>][_<メーカー略称>][_no<番号>]
-    （未選択・未入力の部分は _ ごと省く。同じ分に重なれば _2 …）"""
-    parts = [start.strftime("%Y%m%d_%H%M")]
+                   number: str | None = None, mode: str = MODE_CC) -> str:
+    """<YYYYMMDD_HHMM>[_<満充電電圧 4v1 など>][_<メーカー略称>][_no<番号>][_cp]
+    （未選択・未入力の部分は _ ごと省く。_cp は CP モードのときだけ。同じ分に重なれば _2 …）"""
+    return "_".join(name_parts(start.strftime("%Y%m%d_%H%M"), full_voltage, maker, number, mode))
+
+
+def name_parts(stamp: str, full_voltage: str | None, maker: str | None, number: str | None,
+               mode: str = MODE_CC) -> list[str]:
+    """ベース名を _ でつなぐ前の部分（stamp は開始日時、待機中の表示では YYYYMMDD_HHMM）"""
+    parts = [stamp]
     if full_voltage:
         parts.append(full_voltage_tag(full_voltage))
     if maker:
         parts.append(MAKER_ABBR[maker])
     if number:
         parts.append("no" + number)
-    return "_".join(parts)
+    if mode in MODE_TAGS:
+        parts.append(MODE_TAGS[mode])
+    return parts
 
 
 def full_voltage_tag(full_voltage: str) -> str:
@@ -246,7 +260,7 @@ class TestInfo:
     maker: str | None
     full_voltage: str | None  # "4.1V" など
     model: str
-    current: float
+    current: float | None     # 放電電流 [A]（CP モードのときは None）
     cutoff: float
     mah: float
     wh: float
@@ -258,6 +272,8 @@ class TestInfo:
     post_rest: float = 0.0
     pre_voltage: float | None = None    # 放電前電圧（前休止の最後）[V]
     post_voltage: float | None = None   # 放電後電圧（後休止の最後）[V]
+    mode: str = MODE_CC                 # 放電モード（CC / CP）
+    power: float | None = None          # 放電電力 [W]（CP モードのとき）
 
 
 def format_interval(value: float) -> str:
@@ -282,7 +298,10 @@ def info_lines(info: TestInfo) -> str:
         ["満充電電圧[V]", full],
         ["型番", info.model or ""],
         ["番号", info.number or ""],
-        ["放電電流[A]", f"{info.current:.3f}"],
+        ["放電モード", info.mode],
+        # 使わないほうの設定値は空欄にする（行の並びはモードによらず同じ）
+        ["放電電流[A]", f"{info.current:.3f}" if info.current is not None else ""],
+        ["放電電力[W]", f"{info.power:.3f}" if info.power is not None else ""],
         ["終止電圧[V]", f"{info.cutoff:.3f}"],
         ["放電容量[mAh]", f"{info.mah:.1f}"],
         ["電力量[Wh]", f"{info.wh:.3f}"],

@@ -836,3 +836,75 @@ def test_stop_post_rest_with_onoff_is_quiet(make_app, fake, dialogs, tmp_path, m
     assert pump(app.root, lambda: app.state == "done")
     assert app.result.end_reason == "終止電圧到達" and app.result.csv_path.exists()
     assert started == [] and "showinfo" not in dialogs.names()
+
+
+def test_cp_mode_switches_setpoint_field(make_app, tmp_path, app_dir):
+    """CP モード：放電モードで「放電電流 [A]」と「放電電力 [W]」の欄が入れ替わり、値は別々に持つ。設定は保存される"""
+    app = make_app()
+    assert app.mode_var.get() == "CC" and app.setpoint_label.get() == "放電電流 [A]"
+    assert [str(rb["text"]) for rb in app.mode_segment.radios] == ["CC 定電流", "CP 定電力"]
+    assert app.power_var.get() == "1.500"  # 初めて起動したときの放電電力
+    app.mode_segment.radios[1].invoke()
+    assert app.setpoint_label.get() == "放電電力 [W]"
+    assert str(app.setpoint_entry["textvariable"]) == str(app.power_var)
+    assert app.mode_label["text"] == "CP"
+    assert app.chip_names[0]["text"] == "電力" and app.chip_values[0]["text"] == "1.500 W"
+    assert pump(app.root, lambda: app.plot.ax_i.get_title(loc="left") == "電力 [W]")  # グラフは次の更新で
+    assert app.plan_label["text"] == f"保存予定: {Path('YYYYMMDD_HHMM_SDL') / 'YYYYMMDD_HHMM_cp.csv'}"
+    app.power_var.set("2.25")
+    cond = app.read_conditions()
+    assert cond.mode == "CP" and cond.power == 2.25 and cond.current is None
+    app.mode_segment.radios[0].invoke()
+    assert app.setpoint_label.get() == "放電電流 [A]" and app.current_var.get() == "0.400"
+    assert app.mode_label["text"] == "CC" and app.chip_values[0]["text"] == "0.400 A"
+    assert pump(app.root, lambda: app.plot.ax_i.get_title(loc="left") == "電流 [A]")
+    app.mode_segment.radios[1].invoke()
+    app.folder_var.set(str(tmp_path))
+    app.on_close()
+    app2 = make_app()
+    assert app2.mode_var.get() == "CP" and app2.power_var.get() == "2.250"
+    assert app2.setpoint_label.get() == "放電電力 [W]"
+
+
+def test_cp_mode_limits_current_at_cutoff(make_app):
+    """CP モード：終止電圧のときの電流（電力 ÷ 終止電圧）が 5 A を超える設定では開始しない"""
+    import gui
+
+    app = make_app()
+    app.mode_var.set("CP")
+    app.cutoff_var.set("3.000")
+    app.power_var.set("15.000")
+    assert app.read_conditions().power == 15.0  # ちょうど 5.000 A
+    app.power_var.set("15.010")
+    with pytest.raises(gui.InputError, match="5.000 A を超えます"):
+        app.read_conditions()
+    app.power_var.set("20.001")
+    with pytest.raises(gui.InputError, match="放電電力は 0.001〜20.000 W"):
+        app.read_conditions()
+
+
+def test_cp_mode_discharge(make_app, fake, dialogs, tmp_path):
+    """CP モードで放電：SDL を CP にして負荷 ON。放電中はモードを変えられない。電力 ÷ 終止電圧が 2A 以上なら確認する"""
+    app = make_app()
+    connect(app, fake, tmp_path)
+    app.mode_var.set("CP")
+    app.power_var.set("6.200")
+    app.cutoff_var.set("3.100")
+    dialogs.answer = False
+    app.onoff_btn.invoke()
+    assert dialogs.calls[-1][0] == "askyesno"
+    assert "・終止電圧での電流が 2.0 A 以上になります（6.200 W ÷ 3.100 V = 2.000 A）\n\n" in dialogs.calls[-1][1]
+    assert app.session is None and not fake.load_on
+    app.power_var.set("1.500")
+    start(app)
+    assert fake.function == "POW" and fake.set_power == 1.5 and fake.load_on
+    assert "放電開始（CP 1.500 W / 終止 3.100 V" in app.message_var.get()
+    assert len(dialogs.calls) == 1  # 6.199 W 以下なら確認しない
+    assert all(str(rb["state"]) == "disabled" for rb in app.mode_segment.radios)
+    assert app.session.base_name.endswith("_cp")
+    assert pump(app.root, lambda: len(app.session.snapshot()[0]) >= 2)
+    app.onoff_btn.invoke()
+    assert pump(app.root, lambda: app.state == "done")
+    app.csv_btn.invoke()
+    assert pump(app.root, lambda: app.result is not None and app.result.csv_path is not None)
+    assert "放電モード,CP" in app.result.csv_path.read_text(encoding="utf-8-sig")

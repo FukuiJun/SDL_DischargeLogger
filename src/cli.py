@@ -2,6 +2,7 @@
 
     python src/cli.py --host 127.0.0.1 --current 1.0 --cutoff 3.0 --folder out \
         --maker Panasonic --full 4.1V --model NCR18650B --note "25℃"
+    python src/cli.py --host 127.0.0.1 --power 1.5 --cutoff 3.0     # CP モード（電力を一定に）
 
 Ctrl+C で停止・保存。
 """
@@ -24,7 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="SDL 放電ロガー（CLI）")
     ap.add_argument("--host", default="192.168.10.2")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
-    ap.add_argument("--current", type=float, required=True, help="放電電流 [A]")
+    setpoint = ap.add_mutually_exclusive_group(required=True)
+    setpoint.add_argument("--current", type=float, help="放電電流 [A]（CC モード）")
+    setpoint.add_argument("--power", type=float, help="放電電力 [W]（CP モード）")
     ap.add_argument("--cutoff", type=float, required=True, help="終止電圧 [V]")
     ap.add_argument("--interval", type=float, default=1.0, help="取得周期 [s]（既定 1.0）")
     ap.add_argument("--folder", type=Path, default=Path.cwd(), help="保存先フォルダ")
@@ -46,7 +49,9 @@ def main(argv: list[str] | None = None) -> int:
         session = DischargeSession(client, args.folder,
                                    Conditions(args.maker, args.full, args.model, args.current, args.cutoff,
                                               args.interval, number=recorder.sanitize_number(args.number),
-                                              pre_rest=args.pre_rest, post_rest=args.post_rest),
+                                              pre_rest=args.pre_rest, post_rest=args.post_rest,
+                                              mode=recorder.MODE_CP if args.power is not None else recorder.MODE_CC,
+                                              power=args.power),
                                    note=args.note)
         session.start()
     except (SDLError, StartError) as e:

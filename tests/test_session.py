@@ -44,6 +44,32 @@ def test_start_sets_cc_and_load_on(fake, tmp_path):
         s.wait(5)
 
 
+def test_cp_mode_start_record_and_save(fake, tmp_path):
+    """CP モード：CP の設定で負荷 ON。ファイル名の末尾に _cp、CSV に放電モードと放電電力、PNG の下段は電力"""
+    cond = Conditions(maker="Panasonic", full_voltage="4.1V", model="NCR18650B", current=None, cutoff=3.0,
+                      interval=0.2, mode="CP", power=1.5)
+    s = make_session(fake, tmp_path, cond)
+    s.start()
+    assert ":SOUR:FUNC POW" in fake.commands
+    assert ":SOUR:POW:IRANG 5" in fake.commands
+    assert ":SOUR:POW:LEV:IMM 1.500" in fake.commands
+    assert not any(c.startswith(":SOUR:CURR:LEV") for c in fake.commands)
+    assert fake.load_on
+    assert s.base_name.endswith("_4v1_pana_cp")
+    time.sleep(0.5)
+    fake.voltage_override = 2.9
+    result = s.wait(10)
+    assert result.end_reason == "終止電圧到達"
+    t, v, lower = s.graph_data()
+    assert lower[0] == pytest.approx(1.5, abs=0.01)  # 下段は電力
+    assert s.snapshot()[2][0] == pytest.approx(1.5 / v[0], rel=0.01)
+    assert "放電電力: 1.500 W" in s.title_lines()[1]
+    rows = list(csv.reader(result.csv_path.read_text(encoding="utf-8-sig").splitlines()))
+    d = {r[0]: r[1:] for r in rows if r}
+    assert d["放電モード"] == ["CP"] and d["放電電力[W]"] == ["1.500"] and d["放電電流[A]"] == [""]
+    assert result.png_path.exists()
+
+
 def test_start_refused_when_voltage_at_or_below_cutoff(fake, tmp_path):
     fake.voltage_override = 3.0
     s = make_session(fake, tmp_path)

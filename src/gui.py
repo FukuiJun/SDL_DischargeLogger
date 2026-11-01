@@ -69,8 +69,12 @@ UNSAVED_CLOSE = "保存していないデータがあります。保存して終
 UNSAVED_CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了\nキャンセル: 戻る"
 CLOSE_QUESTION = "放電中です。停止・保存して終了しますか？"
 # 設定の間違いを防ぐため、放電電流がこの値以上・終止電圧がこの値以下なら開始前に確認する
+# （CP モードは、終止電圧のときに流れる電流 = 電力 ÷ 終止電圧 で判断する）
 CONFIRM_CURRENT_A = 2.0
 CONFIRM_CUTOFF_V = 3.0
+MODE_LABELS = {recorder.MODE_CC: "CC 定電流", recorder.MODE_CP: "CP 定電力"}
+SETPOINT_LABELS = {recorder.MODE_CC: "放電電流 [A]", recorder.MODE_CP: "放電電力 [W]"}
+CHIP_SETPOINT_NAMES = {recorder.MODE_CC: "電流", recorder.MODE_CP: "電力"}
 VON_OFFSET_V = 0.1  # ［負荷側終止電圧］のとき SDL の Von = 終止電圧 − 0.1 V
 CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了（データは残りません）\nキャンセル: 放電を続ける"
 
@@ -105,9 +109,15 @@ def parse_span(text: str) -> float | None:
 
 
 def condition_warnings(cond) -> list[str]:
-    """開始前に確認したい設定（放電電流 2A 以上・終止電圧 3.0V 以下）"""
+    """開始前に確認したい設定（放電電流 2A 以上・終止電圧 3.0V 以下）。
+    CP モードは、終止電圧のときの電流（電力 ÷ 終止電圧）が 2A 以上になるか"""
     items = []
-    if cond.current >= CONFIRM_CURRENT_A - 1e-9:
+    if cond.mode == recorder.MODE_CP:
+        end_current = cond.power / cond.cutoff
+        if end_current >= CONFIRM_CURRENT_A - 1e-9:
+            items.append(f"終止電圧での電流が {CONFIRM_CURRENT_A:.1f} A 以上になります"
+                         f"（{cond.power:.3f} W ÷ {cond.cutoff:.3f} V = {end_current:.3f} A）")
+    elif cond.current >= CONFIRM_CURRENT_A - 1e-9:
         items.append(f"放電電流が {CONFIRM_CURRENT_A:.1f} A 以上です（設定 {cond.current:.3f} A）")
     if cond.cutoff <= CONFIRM_CUTOFF_V + 1e-9:
         items.append(f"終止電圧が {CONFIRM_CUTOFF_V:.1f} V 以下です（設定 {cond.cutoff:.3f} V）")
@@ -338,7 +348,7 @@ class App:
 
         self._build()
         for var in (self.maker_var, self.full_var, self.current_var, self.cutoff_var, self.interval_var,
-                    self.number_var):
+                    self.number_var, self.mode_var, self.power_var):
             var.trace_add("write", lambda *_: self._refresh())
         self._refresh()
         root.after(POLL_MS, self._poll)
@@ -431,7 +441,9 @@ class App:
         # ②-1 ステータス行
         row = tk.Frame(lcd, bg=bg)
         row.grid(row=0, column=0, sticky="ew", pady=(px(10), px(6)))
-        tk.Label(row, text="CC", font=f.ui_px(13, True), bg=C["mode-chip"], fg=C["lcd-white"], padx=px(10)).pack(side="left")
+        self.mode_label = tk.Label(row, text=recorder.MODE_CC, font=f.ui_px(13, True), bg=C["mode-chip"],
+                                   fg=C["lcd-white"], padx=px(10))
+        self.mode_label.pack(side="left")
         self.load_label = tk.Label(row, text="LOAD OFF", font=f.ui_px(13, True), bg=bg, fg=C["lcd-white"])
         self.load_label.pack(side="left", padx=(px(10), px(0)))
         self.state_label = tk.Label(row, text="未接続", font=f.ui_px(13), bg=bg, fg=C["lcd-label"])
@@ -465,12 +477,15 @@ class App:
         chips = tk.Frame(lcd, bg=bg)
         chips.grid(row=5, column=0, sticky="ew", pady=(px(8), px(12)))
         self.chip_values: list[tk.Label] = []
+        self.chip_names: list[tk.Label] = []
         for k, name in enumerate(("電流", "終止電圧", "取得周期", "満充電", "メーカー")):
             chips.columnconfigure(k, weight=1, uniform="chip")
             border = C["lcd-accent"] if name == "メーカー" else C["chip-border"]
             cell = tk.Frame(chips, bg=bg, highlightthickness=1, highlightbackground=border, pady=px(4))
             cell.grid(row=0, column=k, sticky="ew", padx=(0 if k == 0 else px(3), 0 if k == 4 else px(3)))
-            tk.Label(cell, text=name, font=f.ui_px(12), bg=bg, fg=C["lcd-label"]).pack()
+            name_label = tk.Label(cell, text=name, font=f.ui_px(12), bg=bg, fg=C["lcd-label"])
+            name_label.pack()
+            self.chip_names.append(name_label)
             value = tk.Label(cell, text=DASH, font=f.ui_px(14) if name == "メーカー" else f.num_px(14),
                              bg=bg, fg=C["lcd-white"])
             value.pack()
@@ -507,7 +522,9 @@ class App:
         # 最大 40 文字（貼り付けで超えたときは 40 文字で切る）
         self.model_var.trace_add("write", lambda *_: len(self.model_var.get()) > MODEL_MAX_LEN
                                  and self.model_var.set(self.model_var.get()[:MODEL_MAX_LEN]))
+        self.mode_var = tk.StringVar(value=self.settings.mode)
         self.current_var = tk.StringVar(value=f"{self.settings.current:.3f}")
+        self.power_var = tk.StringVar(value=f"{self.settings.power:.3f}")
         self.cutoff_var = tk.StringVar(value=f"{self.settings.cutoff:.3f}")
         self.interval_var = tk.StringVar(value=recorder.format_interval(self.settings.interval))
         self.folder_var = tk.StringVar(value=self.settings.folder)
@@ -517,8 +534,18 @@ class App:
         self.number_var = tk.StringVar(value="")
         self.number_var.trace_add("write", lambda *_: self._sanitize_number())
         self.condition_boxes: list[BoxEntry] = []
+        # 放電モード（型番の下）。CP を選ぶと次の行が「放電電力 [W]」になる（電流と電力の値は別々に持つ）
+        tk.Label(form, text="放電モード", **lab).grid(row=1, column=0, sticky="w", pady=px(4))
+        self.mode_segment = Segmented(form, f, self.mode_var, [(MODE_LABELS[m], m) for m in recorder.MODES])
+        self.mode_segment.frame.grid(row=1, column=1, sticky="ew", pady=px(4))
+        self.segments.append(self.mode_segment)
+        self.setpoint_label = tk.StringVar(value=SETPOINT_LABELS[recorder.MODE_CC])
         for r, (label, var, font) in enumerate(rows):
-            tk.Label(form, text=label, **lab).grid(row=r, column=0, sticky="w", pady=px(4))
+            r = r + 1 if r else r  # 放電モードの行の分ずらす
+            if r == 2:
+                tk.Label(form, textvariable=self.setpoint_label, **lab).grid(row=r, column=0, sticky="w", pady=px(4))
+            else:
+                tk.Label(form, text=label, **lab).grid(row=r, column=0, sticky="w", pady=px(4))
             if r == 0:
                 # 型番と番号は同じ行に並べる（備考の欄を狭くしないため）
                 cell = tk.Frame(form, bg=C["panel"])
@@ -536,7 +563,8 @@ class App:
         self.condition_boxes.append(self.number_box)
         self.model_entry = self.condition_boxes[0].entry
         self.number_entry = self.number_box.entry
-        r = len(rows)
+        self.setpoint_entry = self.condition_boxes[1].entry  # 放電電流（CC）／放電電力（CP）
+        r = len(rows) + 1
         tk.Label(form, text="保存先", **lab).grid(row=r, column=0, sticky="w", pady=px(4))
         ff = tk.Frame(form, bg=C["panel"])
         ff.grid(row=r, column=1, sticky="ew", pady=px(4))
@@ -634,17 +662,22 @@ class App:
         self._refresh()
 
     def _input_conditions(self) -> tuple:
-        """入力欄の値（不正なら None）。条件チップ・グラフの表示用"""
-        return (try_number(self.current_var.get(), settings_mod.CURRENT_RANGE),
-                try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE),
+        """入力欄の値（不正なら None）。条件チップ・グラフの表示用。
+        (設定値, 終止電圧, 取得周期, 満充電電圧, メーカー, モード)。設定値は CC なら電流、CP なら電力"""
+        mode = self.mode_var.get()
+        if mode == recorder.MODE_CP:
+            setpoint = try_number(self.power_var.get(), settings_mod.POWER_RANGE)
+        else:
+            setpoint = try_number(self.current_var.get(), settings_mod.CURRENT_RANGE)
+        return (setpoint, try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE),
                 try_number(self.interval_var.get(), settings_mod.INTERVAL_RANGE),
-                self.full_var.get() or None, self.maker_var.get() or None)
+                self.full_var.get() or None, self.maker_var.get() or None, mode)
 
     def _shown_conditions(self) -> tuple:
         s = self.session
         if s is not None and self.state in (STARTING, DISCHARGING, RECONNECTING, STOPPING):
             c = s.cond
-            return c.current, c.cutoff, c.interval, c.full_voltage, c.maker
+            return c.setpoint, c.cutoff, c.interval, c.full_voltage, c.maker, c.mode
         return self._input_conditions()
 
     def _refresh(self) -> None:
@@ -671,13 +704,20 @@ class App:
             box.set_state("normal" if s == DISCONNECTED else "readonly")
 
         # ②-1 ステータス行（前休止・後休止のあいだは負荷 OFF）
+        shown = self._shown_conditions()
+        self.mode_label.configure(text=shown[5])
         load_on = s in (DISCHARGING, RECONNECTING, STOPPING) and self._phase() in (None, recorder.PHASE_DISCHARGE)
         self.load_label.configure(text="LOAD ON" if load_on else "LOAD OFF")
         self._update_state_label()
         self.plan_label.configure(text=self._plan_text())
 
-        # ③ 入力（放電中は備考のみ編集可）
+        # ③ 入力（放電中は備考のみ編集可）。放電モードで「放電電流」「放電電力」の欄を入れ替える
         editable = not running
+        mode = self.mode_var.get()
+        self.setpoint_label.set(SETPOINT_LABELS[mode])
+        setpoint_var = self.power_var if mode == recorder.MODE_CP else self.current_var
+        if str(self.setpoint_entry.cget("textvariable")) != str(setpoint_var):
+            self.setpoint_entry.configure(textvariable=setpoint_var)
         for seg in self.segments:
             seg.set_enabled(editable)
         for box in self.condition_boxes:
@@ -701,7 +741,8 @@ class App:
         self.graph_btn.set_enabled((s == DONE or (s == IDLE and has_data)) and not self._saving)
 
         # ②-6 条件チップ
-        for label, value in zip(self.chip_values, display.chip_values(*self._shown_conditions())):
+        self.chip_names[0].configure(text=CHIP_SETPOINT_NAMES[shown[5]])
+        for label, value in zip(self.chip_values, display.chip_values(*shown)):
             label.configure(text=value, fg=C["lcd-dim"] if value == DASH else C["lcd-white"])
         self._render_values()
 
@@ -745,7 +786,7 @@ class App:
                 return f"保存済み: {Path(r.csv_path.parent.name) / r.csv_path.name}"
             return "保存できませんでした（一時ファイルを残しました）"
         pattern = display.planned_name_pattern(self.full_var.get() or None, self.maker_var.get() or None,
-                                               self.number_var.get() or None)
+                                               self.number_var.get() or None, self.mode_var.get())
         return f"保存予定: {pattern}"  # 日時は開始時に決まる
 
     def _render_values(self) -> None:
@@ -894,8 +935,18 @@ class App:
 
     # ================================================================== 放電
     def read_conditions(self) -> Conditions:
-        current = parse_number(self.current_var.get(), "放電電流", *settings_mod.CURRENT_RANGE, "A", 3)
+        mode = self.mode_var.get()
+        current = power = None
+        if mode == recorder.MODE_CP:
+            power = parse_number(self.power_var.get(), "放電電力", *settings_mod.POWER_RANGE, "W", 3)
+        else:
+            current = parse_number(self.current_var.get(), "放電電流", *settings_mod.CURRENT_RANGE, "A", 3)
         cutoff = parse_number(self.cutoff_var.get(), "終止電圧", *settings_mod.CUTOFF_RANGE, "V", 3)
+        max_current = settings_mod.CURRENT_RANGE[1]
+        if power is not None and power / cutoff > max_current + 1e-9:
+            # 電圧が下がるほど電流が増えるので、終止電圧のときの電流が放電電流の上限を超えないようにする
+            raise InputError(f"終止電圧での電流（{power:.3f} W ÷ {cutoff:.3f} V = {power / cutoff:.3f} A）が "
+                             f"{max_current:.3f} A を超えます。放電電力を下げるか終止電圧を上げてください")
         interval = parse_number(self.interval_var.get(), "取得周期", *settings_mod.INTERVAL_RANGE, "秒", 1)
         von = round(cutoff - VON_OFFSET_V, 3) if self.auto_von_var.get() else None
         pre_rest = post_rest = 0.0
@@ -904,7 +955,8 @@ class App:
             post_rest = parse_number(self.post_rest_var.get(), "オフセット（放電後）", *settings_mod.REST_RANGE, "秒", 0)
         return Conditions(maker=self.maker_var.get() or None, full_voltage=self.full_var.get() or None,
                           model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval,
-                          von=von, number=self.number_var.get(), pre_rest=pre_rest, post_rest=post_rest)
+                          von=von, number=self.number_var.get(), pre_rest=pre_rest, post_rest=post_rest,
+                          mode=mode, power=power)
 
     def _sanitize_number(self) -> None:
         text = self.number_var.get()
@@ -943,7 +995,10 @@ class App:
             return
         if not self._confirm_discard(UNSAVED_START):
             return
-        self.current_var.set(f"{cond.current:.3f}")
+        if cond.mode == recorder.MODE_CP:
+            self.power_var.set(f"{cond.power:.3f}")
+        else:
+            self.current_var.set(f"{cond.current:.3f}")
         self.cutoff_var.set(f"{cond.cutoff:.3f}")
         self.interval_var.set(recorder.format_interval(cond.interval))
         if self.rest_var.get():
@@ -975,7 +1030,7 @@ class App:
     def _discharge_message(self, session: DischargeSession) -> None:
         c = session.cond
         von = f" / Von {c.von:.3f} V" if c.von is not None else ""
-        self.message(f"放電開始（{c.current:.3f} A / 終止 {c.cutoff:.3f} V{von}）")
+        self.message(f"放電開始（{c.setpoint_text} / 終止 {c.cutoff:.3f} V{von}）")
 
     def _on_phase(self, phase: str) -> None:
         """前休止 → 放電、放電 → 後休止 に変わった"""
@@ -1137,13 +1192,15 @@ class App:
                 pass  # ウィンドウを閉じた後
 
     def _graph_source(self):
-        """(経過時間, 電圧, 電流, 終止電圧, 放電電流設定)。放電前は入力中の終止電圧の線だけ"""
+        """(経過時間, 電圧, 下段の値, 終止電圧, 下段の設定値, 下段の見出し)。放電前は入力中の終止電圧の線だけ。
+        下段は CC モードなら電流、CP モードなら電力"""
         s = self.session
         if s is not None and self.state != DISCONNECTED:
-            t, v, i = s.snapshot()
-            return t, v, i, s.cond.cutoff, s.cond.current
-        current, cutoff, *_ = self._input_conditions()
-        return [], [], [], cutoff, current
+            t, v, lower = s.graph_data()
+            return t, v, lower, s.cond.cutoff, s.cond.setpoint, s.cond.lower_graph
+        setpoint, cutoff, *_, mode = self._input_conditions()
+        lower = plotting.LOWER_POWER if mode == recorder.MODE_CP else plotting.LOWER_CURRENT
+        return [], [], [], cutoff, setpoint, lower
 
     def _graph_markers(self) -> list[float]:
         """負荷を ON・OFF にした時刻の縦線（オフセットを入れたとき）"""
@@ -1151,16 +1208,16 @@ class App:
         return s.markers() if s is not None and self.state != DISCONNECTED else []
 
     def _draw_graph(self, force: bool = False) -> None:
-        t, v, i, cutoff, current = self._graph_source()
+        t, v, i, cutoff, current, lower = self._graph_source()
         # 横軸が自動なら、放電が終わったあとは測定時間に合わせる（測定中は伸びていく分の余裕を持たせる）
         s = self.session
         fit = self.time_span is None and s is not None and s.finished and len(t) >= 2
         markers = self._graph_markers()
-        key = (id(self.session), len(t), cutoff, current, self.time_span, fit, tuple(markers))
+        key = (id(self.session), len(t), cutoff, current, lower, self.time_span, fit, tuple(markers))
         if not force and key == self._graph_key:
             return
         self._graph_key = key
-        self.plot.update(t, v, i, cutoff, current, self.time_span, fit=fit, markers=markers)
+        self.plot.update(t, v, i, cutoff, current, self.time_span, fit=fit, markers=markers, lower=lower)
         self.canvas.draw_idle()
 
     def apply_span(self) -> None:
@@ -1177,7 +1234,7 @@ class App:
             self._draw_graph(force=True)
 
     def on_save_graph(self) -> None:
-        t, v, i, cutoff, current = self._graph_source()
+        t, v, i, cutoff, setpoint, lower = self._graph_source()
         folder = Path(self.folder_var.get())
         now = datetime.now()
         s = self.session
@@ -1186,9 +1243,11 @@ class App:
             lines = s.title_lines()
         else:
             path = folder / f"graph_{now:%Y%m%d_%H%M%S}.png"
-            lines = plotting.png_title_lines(None, self.model_var.get().strip(), current, cutoff)
+            cp = lower == plotting.LOWER_POWER
+            lines = plotting.png_title_lines(None, self.model_var.get().strip(), None if cp else setpoint, cutoff,
+                                             power=setpoint if cp else None)
         try:
-            plotting.render_png(path, t, v, i, cutoff, current, lines, markers=self._graph_markers())
+            plotting.render_png(path, t, v, i, cutoff, setpoint, lines, markers=self._graph_markers(), lower=lower)
         except Exception as e:  # noqa: BLE001
             log.exception("グラフを保存できません")
             self.message(f"グラフを保存できませんでした: {path}", "error")
@@ -1230,7 +1289,9 @@ class App:
             pass
         if self.folder_var.get():
             s.folder = self.folder_var.get()
+        s.mode = self.mode_var.get()
         for name, var, rng in (("current", self.current_var, settings_mod.CURRENT_RANGE),
+                               ("power", self.power_var, settings_mod.POWER_RANGE),
                                ("cutoff", self.cutoff_var, settings_mod.CUTOFF_RANGE),
                                ("interval", self.interval_var, settings_mod.INTERVAL_RANGE)):
             value = try_number(var.get(), rng)

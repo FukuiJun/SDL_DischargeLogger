@@ -25,8 +25,8 @@ from pathlib import Path
 import plotting
 import recorder
 from recorder import (END_REASON_COMM_LOST, END_REASON_CUTOFF, END_REASON_ERROR, END_REASON_MANUAL,
-                      END_REASON_WRITE_ERROR, PHASE_DISCHARGE, PHASE_POST, PHASE_PRE, Integrator, PartialWriter,
-                      Sample, TestInfo)
+                      END_REASON_WRITE_ERROR, MODE_CC, MODE_CP, PHASE_DISCHARGE, PHASE_POST, PHASE_PRE, Integrator,
+                      PartialWriter, Sample, TestInfo)
 from sdl_client import SDLClient, SDLConnectionError, SDLError, SDLResponseError
 
 log = logging.getLogger("sdl.session")
@@ -46,13 +46,30 @@ class Conditions:
     maker: str | None
     full_voltage: str | None
     model: str
-    current: float
+    current: float | None     # 放電電流 [A]（CC モード。CP モードのときは None）
     cutoff: float
     interval: float
     von: float | None = None  # 開始時に SDL に設定する Von [V]（None なら設定しない）
     number: str = ""          # 番号（任意。半角の英数字と - _。ファイル名と CSV に入れる）
     pre_rest: float = 0.0     # オフセット：放電の前に負荷 OFF のまま電圧を記録する時間 [s]（0 なら無し）
     post_rest: float = 0.0    # オフセット：終止電圧で負荷を OFF にしたあと電圧を記録する時間 [s]（0 なら無し）
+    mode: str = MODE_CC       # 放電モード。CC: 電流を一定に、CP: 電力を一定に
+    power: float | None = None  # 放電電力 [W]（CP モードのとき）
+
+    @property
+    def setpoint(self) -> float | None:
+        """設定した量（CC モードは放電電流 [A]、CP モードは放電電力 [W]）"""
+        return self.power if self.mode == MODE_CP else self.current
+
+    @property
+    def setpoint_text(self) -> str:
+        """画面・ログに出す設定（「0.400 A」「CP 1.500 W」）"""
+        return f"CP {self.power:.3f} W" if self.mode == MODE_CP else f"{self.current:.3f} A"
+
+    @property
+    def lower_graph(self) -> str:
+        """下段グラフに出す量の見出し（CC モードは電流、CP モードは電力）"""
+        return plotting.LOWER_POWER if self.mode == MODE_CP else plotting.LOWER_CURRENT
 
 
 @dataclass
@@ -110,6 +127,7 @@ class DischargeSession:
         self._t: list[float] = []
         self._v: list[float] = []
         self._i: list[float] = []
+        self._p: list[float] = []
 
     # ---- 状態 ----
     @property
@@ -124,10 +142,16 @@ class DischargeSession:
         with self._data_lock:
             return list(self._t), list(self._v), list(self._i)
 
+    def graph_data(self) -> tuple[list[float], list[float], list[float]]:
+        """(経過時間, 電圧, 下段の値)。下段は CC モードなら電流、CP モードなら電力"""
+        with self._data_lock:
+            lower = self._p if self.cond.mode == MODE_CP else self._i
+            return list(self._t), list(self._v), list(lower)
+
     def title_lines(self) -> list[str]:
         """PNG のタイトル（完了後は結果を入れる。オフセットを入れたときは放電前・放電後の電圧も）"""
         c, r = self.cond, self.result
-        rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage}
+        rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage, "power": c.power}
         if r is None or r.discarded:
             return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff, **rest)
         return plotting.png_title_lines(self.base_name, c.model, c.current, c.cutoff, r.mah, r.wh, r.end_reason,
@@ -168,7 +192,11 @@ class DischargeSession:
                                  "［負荷側終止電圧］のチェックを外すと、Von を設定せずに開始できます") from e
         pre_rest = c.pre_rest > 0
         try:
-            self.client.setup_cc(c.current)
+            if c.mode == MODE_CP:
+                # 電圧が下がるほど電流が増えるので、電流レンジは終止電圧のときの電流で決める
+                self.client.setup_cp(c.power, c.power / c.cutoff)
+            else:
+                self.client.setup_cc(c.current)
             if not pre_rest:
                 self.client.set_load(True)
                 if not self.client.load_state():
@@ -196,7 +224,7 @@ class DischargeSession:
             self.client.load_off_safely()
             self._restore_von()
             raise StartError(f"保存先にフォルダを作れません: {self.folder}（{e}）") from e
-        base = recorder.make_base_name(start_time, c.full_voltage, c.maker, c.number)
+        base = recorder.make_base_name(start_time, c.full_voltage, c.maker, c.number, c.mode)
         self.base_name = recorder.unique_base_name(self.run_dir, base)
         self.paths = recorder.output_paths(self.run_dir, self.base_name)
         try:
@@ -211,9 +239,9 @@ class DischargeSession:
             self._restore_von()
             raise StartError(f"一時ファイルを作れません: {self.paths['partial']}（{e}）") from e
 
-        log.info("%s %s 電流 %.3fA 終止 %.3fV 周期 %gs 開始電圧 %.4fV オフセット 前 %gs 後 %gs",
-                 "前休止開始" if pre_rest else "放電開始", self.base_name, c.current, c.cutoff, c.interval, voltage,
-                 c.pre_rest, c.post_rest)
+        log.info("%s %s %s 終止 %.3fV 周期 %gs 開始電圧 %.4fV オフセット 前 %gs 後 %gs",
+                 "前休止開始" if pre_rest else "放電開始", self.base_name, c.setpoint_text, c.cutoff, c.interval,
+                 voltage, c.pre_rest, c.post_rest)
         self._thread = threading.Thread(target=self._run, name="discharge", daemon=True)
         self._thread.start()
 
@@ -287,6 +315,7 @@ class DischargeSession:
             self._t.append(elapsed)
             self._v.append(m.voltage)
             self._i.append(m.current)
+            self._p.append(m.power)
         self.latest = sample
         self.events.put(("sample", sample))
         return sample
@@ -493,7 +522,8 @@ class DischargeSession:
                         full_voltage=c.full_voltage, model=c.model, current=c.current, cutoff=c.cutoff,
                         mah=self._integrator.mah, wh=self._integrator.wh, interval=c.interval,
                         idn=self.client.idn, note=self.note, number=c.number, pre_rest=c.pre_rest,
-                        post_rest=c.post_rest, pre_voltage=self.pre_voltage, post_voltage=self.post_voltage)
+                        post_rest=c.post_rest, pre_voltage=self.pre_voltage, post_voltage=self.post_voltage,
+                        mode=c.mode, power=c.power)
         partial = self.paths["partial"]
         try:
             if self._measured is None:
@@ -511,11 +541,12 @@ class DischargeSession:
         result.save_ok = True
         result.csv_path = paths["csv"]
         try:
-            t, v, i = self.snapshot()
-            rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage}
+            t, v, lower = self.graph_data()
+            rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage, "power": c.power}
             lines = plotting.png_title_lines(paths["csv"].stem, c.model, c.current, c.cutoff,
                                              result.mah, result.wh, result.end_reason, **rest)
-            plotting.render_png(paths["png"], t, v, i, c.cutoff, c.current, lines, markers=self.markers())
+            plotting.render_png(paths["png"], t, v, lower, c.cutoff, c.setpoint, lines, markers=self.markers(),
+                                lower=c.lower_graph)
             result.png_path = paths["png"]
         except Exception as e:  # noqa: BLE001 - グラフ画像の失敗で CSV を失わない
             log.exception("グラフ画像を保存できません")

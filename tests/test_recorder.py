@@ -97,21 +97,35 @@ def test_final_csv_layout(tmp_path):
     assert lines[5] == "満充電電圧[V],4.1"
     assert lines[6] == "型番,NCR18650B"
     assert lines[7] == "番号,a-12"
-    assert lines[8] == "放電電流[A],1.000"
-    assert lines[9] == "終止電圧[V],3.000"
-    assert lines[10] == "放電容量[mAh],2702.5"
-    assert lines[11] == "電力量[Wh],9.874"
-    assert lines[12] == "取得周期[s],1.0"
-    assert lines[13] == "オフセット 放電前[s],0"
-    assert lines[14] == "オフセット 放電後[s],0"
-    assert lines[15] == "放電前電圧[V],"  # オフセットを入れないときは空欄
-    assert lines[16] == "放電後電圧[V],"
-    assert lines[17] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
-    assert lines[18] == '備考,"25℃恒温槽内。2回目"'
-    assert lines[19] == ""
-    assert lines[20] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh],区間"
-    assert lines[21].startswith("2026/10/01 14:30:05.000,0.000,")
-    assert len([ln for ln in lines[21:] if ln]) == 3
+    assert lines[8] == "放電モード,CC"
+    assert lines[9] == "放電電流[A],1.000"
+    assert lines[10] == "放電電力[W],"  # CC モードのときは空欄
+    assert lines[11] == "終止電圧[V],3.000"
+    assert lines[12] == "放電容量[mAh],2702.5"
+    assert lines[13] == "電力量[Wh],9.874"
+    assert lines[14] == "取得周期[s],1.0"
+    assert lines[15] == "オフセット 放電前[s],0"
+    assert lines[16] == "オフセット 放電後[s],0"
+    assert lines[17] == "放電前電圧[V],"  # オフセットを入れないときは空欄
+    assert lines[18] == "放電後電圧[V],"
+    assert lines[19] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
+    assert lines[20] == '備考,"25℃恒温槽内。2回目"'
+    assert lines[21] == ""
+    assert lines[22] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh],区間"
+    assert lines[23].startswith("2026/10/01 14:30:05.000,0.000,")
+    assert len([ln for ln in lines[23:] if ln]) == 3
+
+
+def test_final_csv_cp_mode(tmp_path):
+    """CP モードは放電モードが CP、放電電力に値が入り、放電電流は空欄（行の並びは同じ）"""
+    out = _write(tmp_path, _info(mode="CP", current=None, power=1.5))
+    rows = list(csv.reader(out.read_text(encoding="utf-8-sig").splitlines()))
+    d = {r[0]: r[1:] for r in rows if r}
+    assert d["放電モード"] == ["CP"]
+    assert d["放電電流[A]"] == [""]
+    assert d["放電電力[W]"] == ["1.500"]
+    keys = [r[0] for r in rows if r]
+    assert keys.index("放電モード") + 2 == keys.index("放電電力[W]")
 
 
 def test_final_csv_offsets_and_rest_voltages(tmp_path):
@@ -227,6 +241,13 @@ def test_base_name_with_number():
     assert recorder.make_base_name(START, "4.1V", "Panasonic", "3") == "20261001_1430_4v1_pana_no3"
     assert recorder.make_base_name(START, None, None, "a-12") == "20261001_1430_noa-12"
     assert recorder.make_base_name(START, "4.2V", None, "") == "20261001_1430_4v2"
+
+
+def test_base_name_cp_mode():
+    """CP モードは末尾に _cp（番号の後）。CC モードは今までと同じ"""
+    assert recorder.make_base_name(START, "4.1V", "Panasonic", "3", "CP") == "20261001_1430_4v1_pana_no3_cp"
+    assert recorder.make_base_name(START, None, None, "", "CP") == "20261001_1430_cp"
+    assert recorder.make_base_name(START, "4.1V", "Panasonic", "3", "CC") == "20261001_1430_4v1_pana_no3"
 
 
 def test_sanitize_number():

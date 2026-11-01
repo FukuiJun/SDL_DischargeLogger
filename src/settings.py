@@ -1,6 +1,6 @@
 """設定ファイル（sdl_logger_settings.json）の読み書き
 
-保存する項目: IP、ポート、保存先フォルダ、放電電流、終止電圧、取得周期、
+保存する項目: IP、ポート、保存先フォルダ、放電モード、放電電流、放電電力、終止電圧、取得周期、
 オプション（測定中継続表示・測定終了音・負荷側終止電圧・オフセット）。
 メーカー・満充電電圧・型番・備考は保存しない（前回の値が残って誤記録になるのを防ぐ）。
 """
@@ -13,6 +13,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 import paths
+from recorder import MODE_CC, MODES
 
 log = logging.getLogger("sdl.settings")
 
@@ -20,6 +21,7 @@ DEFAULT_HOST = "192.168.10.2"
 DEFAULT_PORT = 5025
 
 CURRENT_RANGE = (0.001, 5.000)
+POWER_RANGE = (0.001, 20.000)   # CP モードの放電電力 [W]
 CUTOFF_RANGE = (2.000, 4.200)
 INTERVAL_RANGE = (0.2, 60.0)
 REST_RANGE = (0.0, 7200.0)  # オフセット（放電前・放電後に負荷 OFF のまま電圧を記録する時間）[s]
@@ -31,7 +33,9 @@ class Settings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     folder: str = ""
+    mode: str = MODE_CC     # 放電モード（CC / CP）
     current: float = 0.400  # 初めて起動したとき（設定ファイルが無いとき）の放電電流
+    power: float = 1.500    # 同じく CP モードの放電電力（0.4 A × 3.7 V くらい）
     cutoff: float = 3.500   # 同じく終止電圧
     interval: float = 1.0
     keep_awake: bool = True  # ［測定中継続表示］測定中は画面を消さない・ロックしない・スリープしない
@@ -65,7 +69,9 @@ def load(path: Path | None = None) -> Settings:
         s.port = data["port"]
     if isinstance(data.get("folder"), str) and data["folder"] and Path(data["folder"]).is_dir():
         s.folder = data["folder"]
-    for name, rng in (("current", CURRENT_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE),
+    if data.get("mode") in MODES:
+        s.mode = data["mode"]
+    for name, rng in (("current", CURRENT_RANGE), ("power", POWER_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE),
                       ("pre_rest", REST_RANGE), ("post_rest", REST_RANGE)):
         if _in_range(data.get(name), *rng):
             setattr(s, name, float(data[name]))

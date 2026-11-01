@@ -187,3 +187,15 @@ def test_png_markers(tmp_path):
         assert [line.get_xdata()[0] * 3600 for line in ax._sdl_marks] == pytest.approx([10.0, 150.0])
     fig2 = plotting.render_png(tmp_path / "n.png", t, [4.0] * len(t), [0.0] * len(t), 3.0, 1.0, ["x"])
     assert fig2.axes[0]._sdl_marks == []
+
+
+def test_cp_mode_lower_graph_is_power(tmp_path):
+    """CP モード：下段は電力（縦軸 0〜設定値×1.5）、PNG のタイトルは放電電力"""
+    t = [0, 60, 120]
+    fig = plotting.render_png(tmp_path / "cp.png", t, [4.1, 4.0, 3.9], [1.5, 1.5, 1.5], 3.0, 1.5, ["x"],
+                              lower=plotting.LOWER_POWER)
+    ax_i = fig.axes[1]
+    assert ax_i.get_ylabel() == "電力 [W]"
+    assert ax_i.get_ylim() == pytest.approx((0.0, 2.25))
+    lines = plotting.png_title_lines("b", "NCR18650B", None, 3.0, power=1.5)
+    assert lines[1] == "型番: NCR18650B / 放電電力: 1.500 W / 終止電圧: 3.000 V"

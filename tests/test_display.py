@@ -40,6 +40,8 @@ def test_chip_values_and_dash():
     assert display.chip_values(1.0, 3.0, 1.0, "4.1V", "Panasonic") == ["1.000 A", "3.000 V", "1.0 s", "4.1 V",
                                                                        "Panasonic"]
     assert display.chip_values(None, None, None, None, None) == ["---"] * 5
+    # CP モードは 1 つ目が放電電力
+    assert display.chip_values(1.5, 3.0, 1.0, None, None, "CP")[0] == "1.500 W"
 
 
 def test_planned_name_pattern():
@@ -49,6 +51,7 @@ def test_planned_name_pattern():
     assert display.planned_name_pattern(None, "マクセル") == str(folder / "YYYYMMDD_HHMM_maxell.csv")
     assert display.planned_name_pattern(None, None) == str(folder / "YYYYMMDD_HHMM.csv")
     assert display.planned_name_pattern("4.1V", None, "3") == str(folder / "YYYYMMDD_HHMM_4v1_no3.csv")
+    assert display.planned_name_pattern("4.1V", None, "3", "CP") == str(folder / "YYYYMMDD_HHMM_4v1_no3_cp.csv")
 
 
 def test_colors_defined_in_one_place():
