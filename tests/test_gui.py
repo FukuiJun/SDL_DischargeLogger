@@ -120,7 +120,7 @@ def test_disconnected_state(make_app):
     assert str(app.graph_btn.button["bg"]) == "#e9ebed"  # 押せないときは灰色
     assert app.plan_label["text"] == f"保存予定: {Path('YYYYMMDD_HHMM_SDL') / 'YYYYMMDD_HHMM.csv'}"
     app.radios[1].invoke()
-    app.radios[4].invoke()
+    app.radios[5].invoke()  # 4.1V
     assert app.plan_label["text"] == f"保存予定: {Path('YYYYMMDD_HHMM_SDL') / 'YYYYMMDD_HHMM_4v1_pana.csv'}"
     assert [c["text"] for c in app.chip_values] == ["0.400 A", "3.500 V", "1.0 s", "4.1 V", "Panasonic"]
 
@@ -165,7 +165,8 @@ def test_unselected_can_be_chosen_again(make_app):
     """F-02：起動時は未選択。一度選んだ後でも未選択に戻せる"""
     app = make_app()
     assert app.maker_var.get() == "" and app.full_var.get() == ""
-    assert [str(rb["text"]) for rb in app.radios] == ["未選択", "Panasonic", "マクセル", "未選択", "4.1V", "4.2V"]
+    assert [str(rb["text"]) for rb in app.radios] == ["未選択", "Panasonic", "マクセル", "Spard", "未選択", "4.1V",
+                                                      "4.2V"]
     app.radios[1].invoke()
     assert app.maker_var.get() == "Panasonic"
     assert str(app.radios[1]["fg"]) == "#ffe14a"  # 選択中は黄色の文字

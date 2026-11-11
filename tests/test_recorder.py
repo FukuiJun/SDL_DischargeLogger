@@ -15,6 +15,7 @@ START = datetime(2026, 10, 1, 14, 30, 5)
 @pytest.mark.parametrize("full, maker, expected", [
     ("4.1V", "Panasonic", "20261001_1430_4v1_pana"),
     ("4.2V", "マクセル", "20261001_1430_4v2_maxell"),
+    ("4.1V", "Spard", "20261001_1430_4v1_spard"),
     (None, "Panasonic", "20261001_1430_pana"),
     ("4.1V", None, "20261001_1430_4v1"),
     (None, None, "20261001_1430"),

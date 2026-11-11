@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 # 画面の選択肢 → ファイル名に使う略称
-MAKERS = ["Panasonic", "マクセル"]
-MAKER_ABBR = {"Panasonic": "pana", "マクセル": "maxell"}
+MAKERS = ["Panasonic", "マクセル", "Spard"]
+MAKER_ABBR = {"Panasonic": "pana", "マクセル": "maxell", "Spard": "spard"}
 FULL_VOLTAGES = ["4.1V", "4.2V"]
 
 # 放電モード。CC: 電流を一定に（定電流）、CP: 電力を一定に（定電力）
