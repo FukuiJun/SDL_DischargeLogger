@@ -180,8 +180,8 @@ jobs:
 
           ## 注意
           - CC・CP 設定・負荷 ON/OFF・Von の SCPI コマンド（SPEC.md Q-02）は実機での確認前です。
-            Von を設定できないと表示されたら、［負荷側終止電圧］のチェックを外すと今までどおり使えます。
-            うまく動かないときは、exe と同じフォルダの sdl_logger.log を添えて連絡してください
+            Von を設定できないと表示されて放電を開始できないときは、
+            exe と同じフォルダの sdl_logger.log を添えて連絡してください
           "@
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {

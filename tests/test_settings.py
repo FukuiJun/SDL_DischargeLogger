@@ -19,7 +19,7 @@ def test_roundtrip_only_allowed_keys(app_dir, tmp_path):
     assert settings.save(s)
     data = json.loads((app_dir / "sdl_logger_settings.json").read_text(encoding="utf-8"))
     assert set(data) == {"host", "port", "folder", "mode", "current", "power", "cutoff", "interval", "keep_awake",
-                         "sound", "auto_von", "rest", "pre_rest", "post_rest"}
+                         "sound", "rest", "pre_rest", "post_rest"}
     assert settings.load() == s
 
 
@@ -50,13 +50,15 @@ def test_icon_files():
 
 
 def test_options_default_on_and_saved(app_dir):
-    """オプション（測定中継続表示・測定終了音・負荷側終止電圧）は初期値 ON。変えたら保存される"""
+    """オプション（測定中継続表示・測定終了音）は初期値 ON。変えたら保存される"""
     s = settings.load()
-    assert s.keep_awake and s.sound and s.auto_von
-    s.keep_awake, s.sound, s.auto_von = False, False, False
+    assert s.keep_awake and s.sound
+    s.keep_awake, s.sound = False, False
     settings.save(s)
     loaded = settings.load()
-    assert not loaded.keep_awake and not loaded.sound and not loaded.auto_von
-    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"sound": "yes", "auto_von": 1}), encoding="utf-8")
+    assert not loaded.keep_awake and not loaded.sound
+    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"sound": "yes", "auto_von": False}),
+                                                      encoding="utf-8")
     loaded = settings.load()
-    assert loaded.sound and loaded.auto_von  # bool でない値は無視して初期値
+    assert loaded.sound  # bool でない値は無視して初期値
+    assert not hasattr(loaded, "auto_von")  # v1.1.0 までの［負荷側終止電圧］は読まない（Von はいつも設定する）

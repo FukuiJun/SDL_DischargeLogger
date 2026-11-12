@@ -571,51 +571,46 @@ def test_no_confirm_just_inside_limits(make_app, fake, dialogs, tmp_path):
 
 
 def test_option_checkboxes(make_app, fake, tmp_path, app_dir):
-    """オプションは初期値 ON。Von の表示は終止電圧 −0.1 V。放電中は Von だけ変えられない。設定は保存される"""
+    """オプションは初期値 ON。Von（負荷側終止電圧）はチェックなしでいつも 終止電圧 −0.1 V に設定する。設定は保存される"""
     app = make_app()
-    assert app.keep_awake_var.get() and app.sound_var.get() and app.auto_von_var.get()
-    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V=3.400V)"
+    assert app.keep_awake_var.get() and app.sound_var.get()
+    assert not hasattr(app, "auto_von_chk")
     app.cutoff_var.set("3.2")
-    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V=3.100V)"
-    app.cutoff_var.set("abc")
-    assert app.von_text.get() == "負荷側終止電圧(終止電圧-0.1V)"
+    assert app.read_conditions().von == 3.1
     app.cutoff_var.set("3.500")
     assert app.read_conditions().von == 3.4
-    app.auto_von_chk.invoke()
-    assert app.read_conditions().von is None
-    app.auto_von_chk.invoke()
     connect(app, fake, tmp_path)
     start(app)
     assert fake.von == 3.4 and fake.von_latch is False
-    assert str(app.auto_von_chk["state"]) == "disabled"
     assert str(app.sound_chk["state"]) == "normal" and str(app.keep_awake_chk["state"]) == "normal"
     app.onoff_btn.invoke()
     assert pump(app.root, lambda: app.state == "done")
-    assert str(app.auto_von_chk["state"]) == "normal"
     assert fake.von == 0.0 and fake.von_latch is True  # 終わったら元に戻す
     app.sound_chk.invoke()
     app._remember_settings()
-    assert app.settings.sound is False and app.settings.auto_von is True
+    assert app.settings.sound is False
 
 
-def test_start_without_von_when_unchecked(make_app, fake, tmp_path):
+def test_von_set_even_if_old_settings_turned_it_off(make_app, fake, tmp_path, app_dir):
+    """v1.1.0 までの設定ファイルで［負荷側終止電圧］を OFF にしていても、Von は設定する"""
+    import json
+
+    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"auto_von": False}), encoding="utf-8")
     app = make_app()
-    app.auto_von_var.set(False)
     connect(app, fake, tmp_path)
     start(app)
-    assert fake.von == 0.0 and not any(":SOUR:VOLT:LEV:ON" in c for c in fake.commands)
-    assert app.message_var.get().endswith("放電開始（0.400 A / 終止 3.500 V）")
+    assert fake.von == 3.4 and fake.von_latch is False
 
 
 def test_von_failure_message(make_app, fake, dialogs, tmp_path):
-    """Von を設定できない SDL では開始せず、チェックを外せば開始できると知らせる"""
+    """Von を設定できない SDL では開始しない"""
     fake.von_supported = False
     app = make_app()
     connect(app, fake, tmp_path)
     app.onoff_btn.invoke()
     assert pump(app.root, lambda: app.state == "idle" and dialogs.calls)
     name, text = dialogs.calls[-1]
-    assert name == "showwarning" and "Von" in text and "チェックを外す" in text
+    assert name == "showwarning" and "Von" in text and "チェックを外す" not in text
     assert not fake.load_on
 
 

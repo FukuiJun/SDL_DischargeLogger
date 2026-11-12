@@ -75,7 +75,7 @@ CONFIRM_CUTOFF_V = 3.0
 MODE_LABELS = {recorder.MODE_CC: "CC 定電流", recorder.MODE_CP: "CP 定電力"}
 SETPOINT_LABELS = {recorder.MODE_CC: "放電電流 [A]", recorder.MODE_CP: "放電電力 [W]"}
 CHIP_SETPOINT_NAMES = {recorder.MODE_CC: "電流", recorder.MODE_CP: "電力"}
-VON_OFFSET_V = 0.1  # ［負荷側終止電圧］のとき SDL の Von = 終止電圧 − 0.1 V
+VON_OFFSET_V = 0.1  # 放電開始時に SDL の Von を 終止電圧 − 0.1 V にする（負荷側終止電圧。いつも設定する）
 CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了（データは残りません）\nキャンセル: 放電を続ける"
 
 
@@ -578,8 +578,6 @@ class App:
         # オプション（チェックで任意に選ぶ。状態は設定ファイルに残す）
         self.keep_awake_var = tk.BooleanVar(value=self.settings.keep_awake)
         self.sound_var = tk.BooleanVar(value=self.settings.sound)
-        self.auto_von_var = tk.BooleanVar(value=self.settings.auto_von)
-        self.von_text = tk.StringVar()
         opts = tk.Frame(body, bg=C["panel"])
         opts.pack(fill="x", pady=(px(8), px(0)))
         chk = {"bg": C["panel"], "fg": C["text"], "activebackground": C["panel"], "activeforeground": C["text"],
@@ -587,11 +585,8 @@ class App:
                "anchor": "w", "padx": 0, "pady": px(1), "command": self._on_option_changed}
         self.keep_awake_chk = tk.Checkbutton(opts, text="測定中継続表示", variable=self.keep_awake_var, **chk)
         self.sound_chk = tk.Checkbutton(opts, text="測定終了音", variable=self.sound_var, **chk)
-        self.auto_von_chk = tk.Checkbutton(opts, textvariable=self.von_text, variable=self.auto_von_var, **chk)
-        for c in (self.keep_awake_chk, self.sound_chk, self.auto_von_chk):
+        for c in (self.keep_awake_chk, self.sound_chk):
             c.pack(fill="x")
-        self.cutoff_var.trace_add("write", lambda *_: self._update_von_text())
-        self._update_von_text()
         # オフセット：チェックしたときだけ秒数を編集でき、放電の前後に負荷 OFF のまま電圧を記録する
         self.rest_var = tk.BooleanVar(value=self.settings.rest)
         self.pre_rest_var = tk.StringVar(value=recorder.format_seconds(self.settings.pre_rest))
@@ -723,7 +718,6 @@ class App:
         for box in self.condition_boxes:
             box.set_state("normal" if editable else "disabled")
         self.folder_btn.set_enabled(editable)
-        self.auto_von_chk.configure(state="normal" if editable else "disabled")  # Von は開始時に設定する
         self.rest_chk.configure(state="normal" if editable else "disabled")
         for box in self.rest_boxes:
             box.set_state("normal" if editable and self.rest_var.get() else "disabled")
@@ -948,7 +942,7 @@ class App:
             raise InputError(f"終止電圧での電流（{power:.3f} W ÷ {cutoff:.3f} V = {power / cutoff:.3f} A）が "
                              f"{max_current:.3f} A を超えます。放電電力を下げるか終止電圧を上げてください")
         interval = parse_number(self.interval_var.get(), "取得周期", *settings_mod.INTERVAL_RANGE, "秒", 1)
-        von = round(cutoff - VON_OFFSET_V, 3) if self.auto_von_var.get() else None
+        von = round(cutoff - VON_OFFSET_V, 3)
         pre_rest = post_rest = 0.0
         if self.rest_var.get():
             pre_rest = parse_number(self.pre_rest_var.get(), "オフセット（放電前）", *settings_mod.REST_RANGE, "秒", 0)
@@ -963,11 +957,6 @@ class App:
         clean = recorder.sanitize_number(text)
         if clean != text:
             self.number_var.set(clean)
-
-    def _update_von_text(self) -> None:
-        cutoff = try_number(self.cutoff_var.get(), settings_mod.CUTOFF_RANGE)
-        detail = f"={cutoff - VON_OFFSET_V:.3f}V" if cutoff is not None else ""
-        self.von_text.set(f"負荷側終止電圧(終止電圧-{VON_OFFSET_V:.1f}V{detail})")
 
     def _on_option_changed(self) -> None:
         self._refresh()
@@ -1299,7 +1288,6 @@ class App:
                 setattr(s, name, value)
         s.keep_awake = self.keep_awake_var.get()
         s.sound = self.sound_var.get()
-        s.auto_von = self.auto_von_var.get()
         s.rest = self.rest_var.get()
         for name, var in (("pre_rest", self.pre_rest_var), ("post_rest", self.post_rest_var)):
             value = try_number(var.get(), settings_mod.REST_RANGE)
