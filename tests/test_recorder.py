@@ -198,6 +198,14 @@ def test_find_partial_files(tmp_path):
     assert recorder.find_partial_files(tmp_path) == [tmp_path / "a_partial.csv", tmp_path / "b.partial.csv"]
 
 
+def test_file_base_name_with_number():
+    """番号はファイル名だけに _no<番号> として付ける（フォルダ名には入れない）。未入力なら付けない"""
+    assert recorder.file_base_name("20261001_1430_SDL_400mA_3000mV_pa", "3") == "20261001_1430_SDL_400mA_3000mV_pa_no3"
+    assert recorder.file_base_name("20261001_1430_SDL_400mA_3000mV_pa", "") == "20261001_1430_SDL_400mA_3000mV_pa"
+    assert recorder.file_base_name("20261001_1430_SDL_400mA_3000mV_pa_2", "a-1") == \
+        "20261001_1430_SDL_400mA_3000mV_pa_2_noa-1"
+
+
 def test_name_when_value_missing():
     """待機中の表示で値が未入力・不正なら ? にする"""
     assert recorder.name_from("YYYYMMDD_HHMM", "CC", None, 3.0, None) == "YYYYMMDD_HHMM_SDL_?mA_3000mV"

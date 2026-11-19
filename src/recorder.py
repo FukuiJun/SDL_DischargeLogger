@@ -74,6 +74,12 @@ def name_from(stamp: str, mode: str, setpoint: float | None, cutoff: float | Non
     return "_".join(parts)
 
 
+def file_base_name(run_dir_name: str, number: str | None = None) -> str:
+    """出力フォルダの中の CSV・PNG・一時ファイルの名前。フォルダ名に、番号を入れたときだけ _no<番号> を付ける
+    （番号はファイル名だけに入れ、フォルダ名には入れない）"""
+    return f"{run_dir_name}_no{number}" if number else run_dir_name
+
+
 def _milli(value: float | None, unit: str) -> str:
     """0.400 → '400mA' のように 1000 倍した整数に単位を付ける（入力は小数 3 桁まで）"""
     return f"{round(value * 1000)}{unit}" if value is not None else f"?{unit}"

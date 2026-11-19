@@ -48,6 +48,7 @@ def test_planned_name_pattern():
     assert display.planned_name_pattern("CC", 0.4, 3.5, "Panasonic") == "YYYYMMDD_HHMM_SDL_400mA_3500mV_pa.csv"
     assert display.planned_name_pattern("CC", 0.4, 3.5, None) == "YYYYMMDD_HHMM_SDL_400mA_3500mV.csv"
     assert display.planned_name_pattern("CP", 1.5, 3.0, "マクセル") == "YYYYMMDD_HHMM_SDL_CP_1500mW_3000mV_ma.csv"
+    assert display.planned_name_pattern("CC", 0.4, 3.5, "Panasonic", "3") == "YYYYMMDD_HHMM_SDL_400mA_3500mV_pa_no3.csv"
 
 
 def test_colors_defined_in_one_place():

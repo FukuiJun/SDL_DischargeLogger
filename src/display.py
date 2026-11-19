@@ -68,6 +68,8 @@ def chip_values(setpoint: float | None, cutoff: float | None, interval: float | 
     ]
 
 
-def planned_name_pattern(mode: str, setpoint: float | None, cutoff: float | None, maker: str | None) -> str:
-    """待機中の「保存予定」に出すファイル名（出力フォルダも同じ名前。日時は開始時に決まる）"""
-    return recorder.name_from("YYYYMMDD_HHMM", mode, setpoint, cutoff, maker) + ".csv"
+def planned_name_pattern(mode: str, setpoint: float | None, cutoff: float | None, maker: str | None,
+                         number: str | None = None) -> str:
+    """待機中の「保存予定」に出すファイル名（出力フォルダは番号を除いた同じ名前。日時は開始時に決まる）"""
+    name = recorder.name_from("YYYYMMDD_HHMM", mode, setpoint, cutoff, maker)
+    return recorder.file_base_name(name, number) + ".csv"

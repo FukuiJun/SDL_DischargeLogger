@@ -699,7 +699,7 @@ def test_no_sound_when_unchecked(make_app, fake, dialogs, tmp_path, monkeypatch)
 
 
 def test_number_field(make_app, fake, tmp_path):
-    """番号（任意）：英字は小文字、半角の英数字と - _ だけ。CSV に入る（ファイル名には入れない）。放電中は変えられない"""
+    """番号（任意）：英字は小文字、半角の英数字と - _ だけ。ファイル名の末尾（フォルダ名には入れない）と CSV に入る。放電中は変えられない"""
     app = make_app()
     app.number_var.set("No.3")
     assert app.number_var.get() == "no3"
@@ -709,10 +709,11 @@ def test_number_field(make_app, fake, tmp_path):
     assert app.number_var.get() == "x" * 20
     app.number_var.set("7")
     app.full_var.set("4.1V")
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV.csv"
+    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_no7.csv"
     connect(app, fake, tmp_path)
     start(app)
-    assert "no7" not in app.session.base_name and "4v1" not in app.session.base_name
+    assert app.session.base_name.endswith("_SDL_400mA_3500mV_no7") and "4v1" not in app.session.base_name
+    assert app.session.run_dir.name.endswith("_SDL_400mA_3500mV")  # フォルダ名には番号を入れない
     assert str(app.number_entry["state"]) == "disabled"
     app.onoff_btn.invoke()
     assert pump(app.root, lambda: app.state == "done")

@@ -769,7 +769,7 @@ class App:
     def _plan_text(self) -> str:
         s = self.session
         if self.state in (DISCHARGING, RECONNECTING, STOPPING) and s is not None and s.base_name:
-            return f"保存予定: {s.base_name}.csv"  # 出力フォルダも同じ名前
+            return f"保存予定: {s.base_name}.csv"  # 出力フォルダも同じ名前（番号の _no… を除く）
         if self.state == DONE and self.result is not None:
             r = self.result
             if r.pending:
@@ -780,7 +780,8 @@ class App:
                 return f"保存済み: {r.csv_path.name}"
             return "保存できませんでした（一時ファイルを残しました）"
         setpoint, cutoff, *_, mode = self._input_conditions()
-        pattern = display.planned_name_pattern(mode, setpoint, cutoff, self.maker_var.get() or None)
+        pattern = display.planned_name_pattern(mode, setpoint, cutoff, self.maker_var.get() or None,
+                                               self.number_var.get() or None)
         return f"保存予定: {pattern}"  # 日時は開始時に決まる
 
     def _render_values(self) -> None:
