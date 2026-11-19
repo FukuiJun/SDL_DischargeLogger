@@ -12,22 +12,21 @@ from pathlib import Path
 
 # 画面の選択肢 → ファイル名に使う略称
 MAKERS = ["Panasonic", "マクセル", "Spard"]
-MAKER_ABBR = {"Panasonic": "pana", "マクセル": "maxell", "Spard": "spard"}
+MAKER_ABBR = {"Panasonic": "pa", "マクセル": "ma", "Spard": "sp"}
 FULL_VOLTAGES = ["4.1V", "4.2V"]
 
 # 放電モード。CC: 電流を一定に（定電流）、CP: 電力を一定に（定電力）
 MODE_CC = "CC"
 MODE_CP = "CP"
 MODES = [MODE_CC, MODE_CP]
-MODE_TAGS = {MODE_CP: "cp"}  # ファイル名の末尾に付ける（CC は付けない）
 
 CSV_ENCODING = "utf-8-sig"  # UTF-8 BOM 付き（Excel で文字化けしない）
 CSV_NEWLINE = "\r\n"
 COLUMNS = ["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"]
-# ファイル名にはドットや大文字を使わない（拡張子の . を除く）
+# ファイル名にはドットを使わない（拡張子の . を除く）。大文字は SDL・CP と単位（mA・mV・mW）だけ
 PARTIAL_SUFFIX = "_partial.csv"
 LEGACY_PARTIAL_SUFFIX = ".partial.csv"  # v1.0.5 までの一時ファイル（起動時の検出だけに使う）
-RUN_DIR_SUFFIX = "_SDL"  # 放電 1 回分の出力をまとめるフォルダ <YYYYMMDD_HHMM>_SDL
+RUN_DIR_SUFFIX = "_SDL"  # 放電 1 回分の出力をまとめるフォルダ <YYYYMMDD_HHMM>_SDL_…（make_base_name）
 # 放電開始前に確保されている必要がある空き容量（24 時間分の CSV が約 7MB）
 MIN_FREE_BYTES = 20 * 1024 * 1024
 
@@ -53,31 +52,31 @@ def sanitize_number(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch in NUMBER_CHARS)[:NUMBER_MAX_LEN]
 
 
-def make_base_name(start: datetime, full_voltage: str | None = None, maker: str | None = None,
-                   number: str | None = None, mode: str = MODE_CC) -> str:
-    """<YYYYMMDD_HHMM>[_<満充電電圧 4v1 など>][_<メーカー略称>][_no<番号>][_cp]
-    （未選択・未入力の部分は _ ごと省く。_cp は CP モードのときだけ。同じ分に重なれば _2 …）"""
-    return "_".join(name_parts(start.strftime("%Y%m%d_%H%M"), full_voltage, maker, number, mode))
+def make_base_name(start: datetime, mode: str, setpoint: float | None, cutoff: float | None,
+                   maker: str | None = None) -> str:
+    """出力フォルダとファイルの名前（同じ名前にする）。
+    CC: <YYYYMMDD_HHMM>_SDL_<放電電流 mA>mA_<終止電圧 mV>mV[_<メーカー略称>]
+    CP: <YYYYMMDD_HHMM>_SDL_CP_<放電電力 mW>mW_<終止電圧 mV>mV[_<メーカー略称>]
+    メーカーが未選択なら _ ごと省く。setpoint は CC なら放電電流 [A]、CP なら放電電力 [W]"""
+    return name_from(start.strftime("%Y%m%d_%H%M"), mode, setpoint, cutoff, maker)
 
 
-def name_parts(stamp: str, full_voltage: str | None, maker: str | None, number: str | None,
-               mode: str = MODE_CC) -> list[str]:
-    """ベース名を _ でつなぐ前の部分（stamp は開始日時、待機中の表示では YYYYMMDD_HHMM）"""
-    parts = [stamp]
-    if full_voltage:
-        parts.append(full_voltage_tag(full_voltage))
+def name_from(stamp: str, mode: str, setpoint: float | None, cutoff: float | None, maker: str | None) -> str:
+    """make_base_name の日時の部分を文字列で渡す形（待機中の表示では YYYYMMDD_HHMM）。値が未入力なら ?"""
+    parts = [stamp + RUN_DIR_SUFFIX]
+    if mode == MODE_CP:
+        parts += ["CP", _milli(setpoint, "mW")]
+    else:
+        parts.append(_milli(setpoint, "mA"))
+    parts.append(_milli(cutoff, "mV"))
     if maker:
         parts.append(MAKER_ABBR[maker])
-    if number:
-        parts.append("no" + number)
-    if mode in MODE_TAGS:
-        parts.append(MODE_TAGS[mode])
-    return parts
+    return "_".join(parts)
 
 
-def full_voltage_tag(full_voltage: str) -> str:
-    """ファイル名に入れる満充電電圧。"4.1V" → "4v1"（ドット・大文字を使わない）"""
-    return full_voltage.strip().rstrip("Vv").replace(".", "v").lower()
+def _milli(value: float | None, unit: str) -> str:
+    """0.400 → '400mA' のように 1000 倍した整数に単位を付ける（入力は小数 3 桁まで）"""
+    return f"{round(value * 1000)}{unit}" if value is not None else f"?{unit}"
 
 
 def output_paths(folder: Path, base: str) -> dict[str, Path]:
@@ -94,14 +93,9 @@ def unique_base_name(folder: Path, base: str) -> str:
     return candidate
 
 
-def run_dir_name(start: datetime) -> str:
-    """放電 1 回分の出力フォルダの名前 <YYYYMMDD_HHMM>_SDL"""
-    return start.strftime("%Y%m%d_%H%M") + RUN_DIR_SUFFIX
-
-
-def create_run_dir(folder: Path, start: datetime) -> Path:
-    """保存先の中に出力フォルダを作る。同名のフォルダ（またはファイル）があれば _2, _3 … を付ける"""
-    folder, name = Path(folder), run_dir_name(start)
+def create_run_dir(folder: Path, name: str) -> Path:
+    """保存先の中に出力フォルダ（名前は make_base_name）を作る。同名のフォルダ（またはファイル）があれば _2, _3 … を付ける"""
+    folder = Path(folder)
     candidate, n = name, 1
     while True:
         path = folder / candidate

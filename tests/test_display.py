@@ -1,7 +1,6 @@
 """表示書式（DESIGN.md 8 章、D-AC-04）"""
 
 from datetime import datetime
-from pathlib import Path
 
 import display
 
@@ -45,13 +44,10 @@ def test_chip_values_and_dash():
 
 
 def test_planned_name_pattern():
-    """出力フォルダ YYYYMMDD_HHMM_SDL の中のファイル名"""
-    folder = Path("YYYYMMDD_HHMM_SDL")
-    assert display.planned_name_pattern("4.1V", "Panasonic") == str(folder / "YYYYMMDD_HHMM_4v1_pana.csv")
-    assert display.planned_name_pattern(None, "マクセル") == str(folder / "YYYYMMDD_HHMM_maxell.csv")
-    assert display.planned_name_pattern(None, None) == str(folder / "YYYYMMDD_HHMM.csv")
-    assert display.planned_name_pattern("4.1V", None, "3") == str(folder / "YYYYMMDD_HHMM_4v1_no3.csv")
-    assert display.planned_name_pattern("4.1V", None, "3", "CP") == str(folder / "YYYYMMDD_HHMM_4v1_no3_cp.csv")
+    """待機中の「保存予定」のファイル名（出力フォルダも同じ名前）"""
+    assert display.planned_name_pattern("CC", 0.4, 3.5, "Panasonic") == "YYYYMMDD_HHMM_SDL_400mA_3500mV_pa.csv"
+    assert display.planned_name_pattern("CC", 0.4, 3.5, None) == "YYYYMMDD_HHMM_SDL_400mA_3500mV.csv"
+    assert display.planned_name_pattern("CP", 1.5, 3.0, "マクセル") == "YYYYMMDD_HHMM_SDL_CP_1500mW_3000mV_ma.csv"
 
 
 def test_colors_defined_in_one_place():

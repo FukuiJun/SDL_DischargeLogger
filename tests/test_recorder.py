@@ -2,7 +2,6 @@
 
 import csv
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -12,22 +11,24 @@ from recorder import Integrator, PartialWriter, Sample, TestInfo
 START = datetime(2026, 10, 1, 14, 30, 5)
 
 
-@pytest.mark.parametrize("full, maker, expected", [
-    ("4.1V", "Panasonic", "20261001_1430_4v1_pana"),
-    ("4.2V", "マクセル", "20261001_1430_4v2_maxell"),
-    ("4.1V", "Spard", "20261001_1430_4v1_spard"),
-    (None, "Panasonic", "20261001_1430_pana"),
-    ("4.1V", None, "20261001_1430_4v1"),
-    (None, None, "20261001_1430"),
+@pytest.mark.parametrize("mode, setpoint, cutoff, maker, expected", [
+    ("CC", 0.4, 3.0, "Panasonic", "20261001_1430_SDL_400mA_3000mV_pa"),
+    ("CC", 1.0, 2.75, "マクセル", "20261001_1430_SDL_1000mA_2750mV_ma"),
+    ("CC", 0.001, 3.5, "Spard", "20261001_1430_SDL_1mA_3500mV_sp"),
+    ("CC", 2.5, 3.0, None, "20261001_1430_SDL_2500mA_3000mV"),
+    ("CP", 1.5, 3.0, "Panasonic", "20261001_1430_SDL_CP_1500mW_3000mV_pa"),
+    ("CP", 12.345, 3.3, None, "20261001_1430_SDL_CP_12345mW_3300mV"),
 ])
-def test_base_name_patterns(full, maker, expected):
-    """AC-02：仕様書 5.2 の表の 5 パターン（日時は分まで。満充電電圧は 4v1 のようにドット・大文字なし）"""
-    assert recorder.make_base_name(START, full, maker) == expected
+def test_base_name_patterns(mode, setpoint, cutoff, maker, expected):
+    """AC-02：仕様書 5.2 の表のパターン。日付_時間_SDL_電流mA_終止電圧mV(_pa/_ma/_sp)、CP は 電流 の代わりに CP_電力mW。
+    ドットは使わない"""
+    assert recorder.make_base_name(START, mode, setpoint, cutoff, maker) == expected
+    assert "." not in expected
 
 
 def test_unique_base_name_adds_suffix(tmp_path):
     """AC-02：同名ファイルがあると _2、さらにあると _3"""
-    base = "20261001_1430_4v1_pana"
+    base = "20261001_1430_SDL_400mA_3000mV_pa"
     assert recorder.unique_base_name(tmp_path, base) == base
     (tmp_path / f"{base}.csv").write_text("x")
     assert recorder.unique_base_name(tmp_path, base) == f"{base}_2"
@@ -197,22 +198,20 @@ def test_find_partial_files(tmp_path):
     assert recorder.find_partial_files(tmp_path) == [tmp_path / "a_partial.csv", tmp_path / "b.partial.csv"]
 
 
-def test_full_voltage_tag():
-    assert recorder.full_voltage_tag("4.1V") == "4v1"
-    assert recorder.full_voltage_tag("4.2V") == "4v2"
-    for name in (recorder.output_paths(Path("."), recorder.make_base_name(START, "4.2V", "マクセル")).values()):
-        stem = name.name[:-len(".csv")]
-        assert "." not in stem and stem == stem.lower()
+def test_name_when_value_missing():
+    """待機中の表示で値が未入力・不正なら ? にする"""
+    assert recorder.name_from("YYYYMMDD_HHMM", "CC", None, 3.0, None) == "YYYYMMDD_HHMM_SDL_?mA_3000mV"
+    assert recorder.name_from("YYYYMMDD_HHMM", "CP", 1.5, None, "Spard") == "YYYYMMDD_HHMM_SDL_CP_1500mW_?mV_sp"
 
 
 def test_run_dir_name_and_suffix(tmp_path):
-    """出力フォルダは <YYYYMMDD_HHMM>_SDL。同名があれば _SDL_2, _SDL_3 …"""
-    assert recorder.run_dir_name(START) == "20261001_1430_SDL"
-    first = recorder.create_run_dir(tmp_path, START)
-    assert first == tmp_path / "20261001_1430_SDL" and first.is_dir()
-    assert recorder.create_run_dir(tmp_path, START) == tmp_path / "20261001_1430_SDL_2"
-    (tmp_path / "20261001_1430_SDL_3").write_text("同名のファイル")
-    assert recorder.create_run_dir(tmp_path, START) == tmp_path / "20261001_1430_SDL_4"
+    """出力フォルダは make_base_name の名前。同名があれば _2, _3 …"""
+    name = recorder.make_base_name(START, "CC", 0.4, 3.0, "Panasonic")
+    first = recorder.create_run_dir(tmp_path, name)
+    assert first == tmp_path / "20261001_1430_SDL_400mA_3000mV_pa" and first.is_dir()
+    assert recorder.create_run_dir(tmp_path, name) == tmp_path / f"{name}_2"
+    (tmp_path / f"{name}_3").write_text("同名のファイル")
+    assert recorder.create_run_dir(tmp_path, name) == tmp_path / f"{name}_4"
 
 
 def test_remove_dir_if_empty(tmp_path):
@@ -227,28 +226,17 @@ def test_remove_dir_if_empty(tmp_path):
 
 def test_find_partial_files_in_run_dirs(tmp_path):
     """起動時の検出は出力フォルダ（*_SDL*）の中も見る"""
-    run = tmp_path / "20261001_1430_SDL_2"
-    run.mkdir()
-    (run / "20261001_1430_4v1_pana_partial.csv").write_text("x")
-    (run / "20261001_1430_4v1_pana.csv").write_text("x")
+    for name in ("20261001_1430_SDL_2", "20261001_1430_SDL_400mA_3000mV_pa"):  # v1.1.1 までの名前と今の名前
+        run = tmp_path / name
+        run.mkdir()
+        (run / f"{name}_partial.csv").write_text("x")
+        (run / f"{name}.csv").write_text("x")
     other = tmp_path / "other"
     other.mkdir()
     (other / "z_partial.csv").write_text("x")
-    assert recorder.find_partial_files(tmp_path) == [run / "20261001_1430_4v1_pana_partial.csv"]
-
-
-def test_base_name_with_number():
-    """番号を入れると末尾に _no<番号>。未入力なら付けない"""
-    assert recorder.make_base_name(START, "4.1V", "Panasonic", "3") == "20261001_1430_4v1_pana_no3"
-    assert recorder.make_base_name(START, None, None, "a-12") == "20261001_1430_noa-12"
-    assert recorder.make_base_name(START, "4.2V", None, "") == "20261001_1430_4v2"
-
-
-def test_base_name_cp_mode():
-    """CP モードは末尾に _cp（番号の後）。CC モードは今までと同じ"""
-    assert recorder.make_base_name(START, "4.1V", "Panasonic", "3", "CP") == "20261001_1430_4v1_pana_no3_cp"
-    assert recorder.make_base_name(START, None, None, "", "CP") == "20261001_1430_cp"
-    assert recorder.make_base_name(START, "4.1V", "Panasonic", "3", "CC") == "20261001_1430_4v1_pana_no3"
+    assert recorder.find_partial_files(tmp_path) == [
+        tmp_path / "20261001_1430_SDL_2" / "20261001_1430_SDL_2_partial.csv",
+        tmp_path / "20261001_1430_SDL_400mA_3000mV_pa" / "20261001_1430_SDL_400mA_3000mV_pa_partial.csv"]
 
 
 def test_sanitize_number():

@@ -38,14 +38,15 @@ def test_start_sets_cc_and_load_on(fake, tmp_path):
         assert ":SOUR:CURR:LEV:IMM 1.000" in fake.commands
         assert fake.load_on
         assert s.paths["partial"].exists()
-        assert s.base_name.endswith("_4v1_pana")
+        assert s.base_name.endswith("_SDL_1000mA_3000mV_pa")
+        assert s.run_dir.name == s.base_name  # 出力フォルダとファイルは同じ名前
     finally:
         s.request_stop(save=False)
         s.wait(5)
 
 
 def test_cp_mode_start_record_and_save(fake, tmp_path):
-    """CP モード：CP の設定で負荷 ON。ファイル名の末尾に _cp、CSV に放電モードと放電電力、PNG の下段は電力"""
+    """CP モード：CP の設定で負荷 ON。名前は _SDL_CP_<電力>mW_、CSV に放電モードと放電電力、PNG の下段は電力"""
     cond = Conditions(maker="Panasonic", full_voltage="4.1V", model="NCR18650B", current=None, cutoff=3.0,
                       interval=0.2, mode="CP", power=1.5)
     s = make_session(fake, tmp_path, cond)
@@ -55,7 +56,7 @@ def test_cp_mode_start_record_and_save(fake, tmp_path):
     assert ":SOUR:POW:LEV:IMM 1.500" in fake.commands
     assert not any(c.startswith(":SOUR:CURR:LEV") for c in fake.commands)
     assert fake.load_on
-    assert s.base_name.endswith("_4v1_pana_cp")
+    assert s.base_name.endswith("_SDL_CP_1500mW_3000mV_pa") and s.run_dir.name == s.base_name
     time.sleep(0.5)
     fake.voltage_override = 2.9
     result = s.wait(10)
@@ -269,7 +270,7 @@ def test_partial_has_rows_while_running(fake, tmp_path):
 
 
 def test_run_dir_per_discharge(fake, tmp_path):
-    """出力は保存先の中の <YYYYMMDD_HHMM>_SDL フォルダにまとめる。同じ分に 2 回始めると _SDL_2"""
+    """出力は保存先の中の <YYYYMMDD_HHMM>_SDL_… フォルダにまとめる（中のファイルも同じ名前）。同じ分に同じ条件で 2 回始めると _2"""
     dirs = []
     for _ in range(2):
         s = make_session(fake, tmp_path)
@@ -279,9 +280,9 @@ def test_run_dir_per_discharge(fake, tmp_path):
         s.request_stop(save=True)
         result = s.wait(10)
         assert result.csv_path.parent == s.run_dir and result.png_path.parent == s.run_dir
-        assert s.run_dir.name[:13] == s.base_name[:13]
+        assert s.run_dir.name == s.base_name
     assert all(d.parent == tmp_path for d in dirs)
-    assert dirs[0].name.endswith("_SDL")
+    assert dirs[0].name.endswith("_SDL_1000mA_3000mV_pa")
     if dirs[0].name[:13] == dirs[1].name[:13]:
         assert dirs[1].name == dirs[0].name + "_2"
 

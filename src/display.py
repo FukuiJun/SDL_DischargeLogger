@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from pathlib import Path
 
 import recorder
 
@@ -69,8 +68,6 @@ def chip_values(setpoint: float | None, cutoff: float | None, interval: float | 
     ]
 
 
-def planned_name_pattern(full_voltage: str | None, maker: str | None, number: str | None = None,
-                         mode: str = recorder.MODE_CC) -> str:
-    """待機中の「保存予定」に出すパターン（出力フォルダ YYYYMMDD_HHMM_SDL の中のファイル名）"""
-    parts = recorder.name_parts("YYYYMMDD_HHMM", full_voltage, maker, number, mode)
-    return str(Path("YYYYMMDD_HHMM" + recorder.RUN_DIR_SUFFIX) / ("_".join(parts) + ".csv"))
+def planned_name_pattern(mode: str, setpoint: float | None, cutoff: float | None, maker: str | None) -> str:
+    """待機中の「保存予定」に出すファイル名（出力フォルダも同じ名前。日時は開始時に決まる）"""
+    return recorder.name_from("YYYYMMDD_HHMM", mode, setpoint, cutoff, maker) + ".csv"

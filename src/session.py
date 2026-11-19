@@ -218,14 +218,15 @@ class DischargeSession:
             self.phase, self.phase_deadline = PHASE_PRE, t0 + c.pre_rest
         else:
             self.phase = PHASE_DISCHARGE
+        # 出力フォルダと、その中の CSV・PNG は同じ名前（同じ分に同じ条件で始めたときはフォルダに _2 …）
         try:
-            self.run_dir = recorder.create_run_dir(self.folder, start_time)
+            self.run_dir = recorder.create_run_dir(
+                self.folder, recorder.make_base_name(start_time, c.mode, c.setpoint, c.cutoff, c.maker))
         except OSError as e:
             self.client.load_off_safely()
             self._restore_von()
             raise StartError(f"保存先にフォルダを作れません: {self.folder}（{e}）") from e
-        base = recorder.make_base_name(start_time, c.full_voltage, c.maker, c.number, c.mode)
-        self.base_name = recorder.unique_base_name(self.run_dir, base)
+        self.base_name = recorder.unique_base_name(self.run_dir, self.run_dir.name)
         self.paths = recorder.output_paths(self.run_dir, self.base_name)
         try:
             self._writer = PartialWriter(self.paths["partial"])
