@@ -211,7 +211,9 @@ class SDLClient:
         with self._lock:
             self.write(":SOUR:FUNC CURR")
             self.write(f":SOUR:CURR:IRANG {current_range_for(current)}")
-            self.write(f":SOUR:CURR:LEV:IMM {current:.3f}")
+            # 連続半減で 0.1 mA の桁が出たときだけ 4 桁で送る（0.0125 など）
+            self.write(f":SOUR:CURR:LEV:IMM {current:.4f}" if round(current, 3) != round(current, 4)
+                       else f":SOUR:CURR:LEV:IMM {current:.3f}")
 
     def setup_cp(self, power: float, max_current: float) -> None:
         """CP モード・電流レンジ・電力値を設定する（負荷は ON にしない）。

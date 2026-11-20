@@ -313,7 +313,7 @@ class LcdPlot:
 def png_title_lines(base: str | None, model: str, current: float | None, cutoff: float | None,
                     mah: float | None = None, wh: float | None = None, reason: str | None = None, *,
                     pre_voltage: float | None = None, post_voltage: float | None = None,
-                    power: float | None = None) -> list[str]:
+                    power: float | None = None, extra: Sequence[str] = ()) -> list[str]:
     """1 行目: ベース名、2 行目: 型番・放電電流（CP モードは放電電力）・終止電圧（未入力は省く）、
     次の行: 完了後の結果、最後の行: オフセットを入れたときの放電前電圧・放電後電圧（測れたものだけ）"""
     lines = [base or "（未開始）"]
@@ -335,6 +335,7 @@ def png_title_lines(base: str | None, model: str, current: float | None, cutoff:
         rest.append(f"放電前電圧: {pre_voltage:.3f} V")
     if post_voltage is not None:
         rest.append(f"放電後電圧: {post_voltage:.3f} V")
+    lines.extend(extra)  # 連続半減の設定・各回の放電容量
     if rest:
         lines.append(" / ".join(rest))
     return lines

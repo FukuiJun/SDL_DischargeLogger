@@ -3,6 +3,7 @@
     python src/cli.py --host 127.0.0.1 --current 1.0 --cutoff 3.0 --folder out \
         --maker Panasonic --full 4.1V --model NCR18650B --note "25℃"
     python src/cli.py --host 127.0.0.1 --power 1.5 --cutoff 3.0     # CP モード（電力を一定に）
+    python src/cli.py --host 127.0.0.1 --current 0.4 --cutoff 3.0 --half 4 --wait 600   # 連続半減
 
 Ctrl+C で停止・保存。
 """
@@ -38,7 +39,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--note", default="", help="備考")
     ap.add_argument("--pre-rest", type=float, default=0.0, help="オフセット 放電前 [s]（負荷 OFF のまま電圧を記録）")
     ap.add_argument("--post-rest", type=float, default=0.0, help="オフセット 放電後 [s]（終止電圧で負荷 OFF にしたあと）")
+    ap.add_argument("--half", type=int, default=0, help="連続半減の放電回数（--current を初期電流にして半分ずつ）")
+    ap.add_argument("--wait", type=float, default=600.0, help="連続半減の待機 [s]（既定 600）")
     args = ap.parse_args(argv)
+    if args.half and args.current is None:
+        ap.error("--half は --current（初期電流）と一緒に指定してください")
+    mode = recorder.MODE_CP if args.power is not None else recorder.MODE_HALF if args.half else recorder.MODE_CC
 
     applog.setup()
     logging.getLogger().addHandler(logging.StreamHandler(sys.stderr))
@@ -50,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                                    Conditions(args.maker, args.full, args.model, args.current, args.cutoff,
                                               args.interval, number=recorder.sanitize_number(args.number),
                                               pre_rest=args.pre_rest, post_rest=args.post_rest,
-                                              mode=recorder.MODE_CP if args.power is not None else recorder.MODE_CC,
-                                              power=args.power),
+                                              mode=mode, power=args.power, wait=args.wait,
+                                              count=max(args.half, 1)),
                                    note=args.note)
         session.start()
     except (SDLError, StartError) as e:

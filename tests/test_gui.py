@@ -839,7 +839,7 @@ def test_cp_mode_switches_setpoint_field(make_app, tmp_path, app_dir):
     """CP モード：放電モードで「放電電流 [A]」と「放電電力 [W]」の欄が入れ替わり、値は別々に持つ。設定は保存される"""
     app = make_app()
     assert app.mode_var.get() == "CC" and app.setpoint_label.get() == "放電電流 [A]"
-    assert [str(rb["text"]) for rb in app.mode_segment.radios] == ["CC 定電流", "CP 定電力"]
+    assert [str(rb["text"]) for rb in app.mode_segment.radios] == ["CC 定電流", "CP 定電力", "連続半減"]
     assert app.power_var.get() == "1.500"  # 初めて起動したときの放電電力
     app.mode_segment.radios[1].invoke()
     assert app.setpoint_label.get() == "放電電力 [W]"
@@ -905,3 +905,73 @@ def test_cp_mode_discharge(make_app, fake, dialogs, tmp_path):
     app.csv_btn.invoke()
     assert pump(app.root, lambda: app.result is not None and app.result.csv_path is not None)
     assert "放電モード,CP" in app.result.csv_path.read_text(encoding="utf-8-sig")
+
+
+def test_half_mode_fields(make_app, app_dir, tmp_path):
+    """連続半減：選んだときだけ 待機・回数 の行が出て、「初期電流」になる。最後の回の電流を出し、1 mA 未満は開始しない"""
+    import gui
+
+    app = make_app()
+    app.root.update()
+    assert not app.half_cell.winfo_ismapped()
+    app.mode_segment.radios[2].invoke()
+    app.root.update()
+    assert app.half_cell.winfo_ismapped()
+    assert app.setpoint_label.get() == "初期電流 [A]" and app.mode_label["text"] == "CC"
+    assert app.wait_var.get() == "600" and app.count_var.get() == "4"
+    assert app.half_hint["text"] == "最終 0.050 A"
+    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_連続半減.csv"
+    cond = app.read_conditions()
+    assert cond.mode == "HALF" and cond.current == 0.4 and cond.wait == 600 and cond.count == 4
+    app.count_var.set("10")
+    assert app.half_hint["text"] == "最終 0.0008 A"
+    with pytest.raises(gui.InputError, match="10 回目の電流が 0.0008 A"):
+        app.read_conditions()
+    app.count_var.set("1")
+    with pytest.raises(gui.InputError, match="放電回数は 2〜20 回"):
+        app.read_conditions()
+    app.count_var.set("5")
+    app.wait_var.set("120")
+    app.folder_var.set(str(tmp_path))
+    app.on_close()
+    app2 = make_app()
+    assert app2.mode_var.get() == "HALF" and app2.wait_var.get() == "120" and app2.count_var.get() == "5"
+
+
+def test_half_mode_discharge(make_app, fake, dialogs, tmp_path):
+    """連続半減で放電：液晶に「n/回数 回目」と電流、待機中は残り時間。待機・回数は放電中は変えられない"""
+    app = make_app()
+    connect(app, fake, tmp_path)
+    app.mode_var.set("HALF")
+    app.current_var.set("0.400")
+    app.wait_var.set("0.3")
+    app.count_var.set("2")
+    start(app, interval="0.2")
+    assert app.state_label["text"] == "● 放電中  1/2 回目  0.400 A"
+    assert "放電開始（連続半減 初期 0.400 A / 2 回 / 待機 0.3 s / 終止 3.500 V" in app.message_var.get()
+    assert str(app.wait_box.entry["state"]) == "disabled" and str(app.count_box.entry["state"]) == "disabled"
+    assert app.session.base_name.endswith("_SDL_400mA_3500mV_連続半減")
+    fake.voltage_override = 3.4
+    assert pump(app.root, lambda: app.session.phase == "待機")
+    assert pump(app.root, lambda: "1/2 回目のあと" in app.state_label["text"])
+    assert app.load_label["text"] == "LOAD OFF"
+    assert "0.200 A で 2 回目を放電します" in app.message_var.get()
+    fake.voltage_override = 3.8
+    assert pump(app.root, lambda: app.state_label["text"] == "● 放電中  2/2 回目  0.200 A")
+    assert app.chip_values[0]["text"] == "0.200 A"
+    assert "2 回目を 0.200 A で放電しています" in app.message_var.get()
+    fake.voltage_override = 3.4
+    assert pump(app.root, lambda: app.state == "done")
+    assert "連続半減放電（2 回）が終わりました。保存しました" in app.message_var.get()
+    text = app.result.csv_path.read_text(encoding="utf-8-sig")
+    assert "放電モード,連続半減" in text and "各回の電流[A],0.400,0.200" in text
+
+
+def test_elide_middle():
+    """保存予定が長いときは途中を … で省き、先頭と末尾を残す"""
+    import gui
+
+    text = "保存予定: 20261120_0930_SDL_400mA_3000mV_pa_連続半減_no3.csv"
+    assert gui.elide_middle(text, 1000, len) == text
+    short = gui.elide_middle(text, 30, len)
+    assert len(short) <= 30 and "…" in short and short.startswith("保存予定: 2") and short.endswith("no3.csv")

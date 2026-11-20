@@ -19,7 +19,7 @@ def test_roundtrip_only_allowed_keys(app_dir, tmp_path):
     assert settings.save(s)
     data = json.loads((app_dir / "sdl_logger_settings.json").read_text(encoding="utf-8"))
     assert set(data) == {"host", "port", "folder", "mode", "current", "power", "cutoff", "interval", "keep_awake",
-                         "sound", "rest", "pre_rest", "post_rest"}
+                         "sound", "rest", "pre_rest", "post_rest", "wait", "count"}
     assert settings.load() == s
 
 

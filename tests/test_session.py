@@ -504,3 +504,68 @@ def test_pre_and_post_rest_title_lines(fake, tmp_path):
     assert len(s.markers()) == 2 and s.markers()[0] < s.markers()[1]
     last = s.title_lines()[-1]
     assert last == f"放電前電圧: {s.pre_voltage:.3f} V / 放電後電圧: {s.post_voltage:.3f} V"
+
+
+def test_half_mode_halves_current_after_wait(fake, tmp_path):
+    """連続半減：終止電圧で負荷 OFF → 待機 → 電流を半分にして次の回。設定した回数で終わり、各回の容量を残す"""
+    cond = Conditions(maker="Panasonic", full_voltage=None, model="", current=1.0, cutoff=3.0, interval=0.1,
+                      mode="HALF", wait=0.4, count=3, von=2.9)
+    s = make_session(fake, tmp_path, cond)
+    s.start()
+    assert s.base_name.endswith("_SDL_1000mA_3000mV_pa_連続半減") and s.run_dir.name == s.base_name
+    phases = []
+    end = time.monotonic() + 20
+    while not s.finished and time.monotonic() < end:
+        if not phases or phases[-1] != (s.phase, s.step):
+            phases.append((s.phase, s.step))
+            if s.phase == "放電":
+                time.sleep(0.35)          # 少し放電してから
+                fake.voltage_override = 2.9  # 終止電圧を下回らせる
+            elif s.phase == "待機":
+                fake.voltage_override = 3.6  # 待機中に電圧が戻る
+                assert not fake.load_on and fake.von == 2.9  # 待機中は負荷 OFF、Von はそのまま
+        time.sleep(0.02)
+    result = s.wait(5)
+    assert result.end_reason == "終止電圧到達"
+    assert phases == [("放電", 1), ("待機", 1), ("放電", 2), ("待機", 2), ("放電", 3)]
+    levels = [c for c in fake.commands if c.startswith(":SOUR:CURR:LEV:IMM")]
+    assert levels == [":SOUR:CURR:LEV:IMM 1.000", ":SOUR:CURR:LEV:IMM 0.500", ":SOUR:CURR:LEV:IMM 0.250"]
+    assert not fake.load_on and fake.von == 0.0  # 終わったら Von を元に戻す
+    assert len(s.markers()) == 4  # OFF・ON が 2 回ずつ
+    mah = s.step_mah
+    assert len(mah) == 3 and all(m > 0 for m in mah)
+    assert sum(mah) == pytest.approx(result.mah)
+    rows = list(csv.reader(result.csv_path.read_text(encoding="utf-8-sig").splitlines()))
+    d = {r[0]: r[1:] for r in rows if r}
+    assert d["放電モード"] == ["連続半減"] and d["放電回数"] == ["3"] and d["待機[s]"] == ["0.4"]
+    assert d["各回の電流[A]"] == ["1.000", "0.500", "0.250"]
+    assert len(d["各回の放電容量[mAh]"]) == 3
+    head = rows.index(["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"])
+    data = rows[head + 1:]
+    sections = []
+    for r in data:
+        if not sections or sections[-1] != r[7]:
+            sections.append(r[7])
+    assert sections == ["放電1", "待機1", "放電2", "待機2", "放電3"]
+    # 待機のあいだは積算しない（待機をはさんで前の回とつないで積算しない）
+    wait1 = [r for r in data if r[7] == "待機1"]
+    first2 = next(r for r in data if r[7] == "放電2")
+    assert float(first2[5]) == pytest.approx(float(wait1[-1][5]))
+    assert "各回の放電容量" in s.title_lines()[-1]
+
+
+def test_half_mode_manual_stop_during_wait(fake, tmp_path):
+    """連続半減の待機中に止めると手動停止（保存待ち）。止めるまでの回の容量が残る"""
+    cond = Conditions(None, None, "", 1.0, 3.0, 0.1, mode="HALF", wait=30.0, count=4)
+    s = make_session(fake, tmp_path, cond)
+    s.start()
+    time.sleep(0.3)
+    fake.voltage_override = 2.9
+    end = time.monotonic() + 10
+    while s.phase != "待機" and time.monotonic() < end:
+        time.sleep(0.02)
+    assert s.phase == "待機" and s.phase_remaining() > 20
+    s.request_stop(save=False, keep=True)
+    result = s.wait(5)
+    assert result.end_reason == "手動停止" and result.pending
+    assert len(s.step_mah) == 1

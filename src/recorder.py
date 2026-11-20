@@ -8,6 +8,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 # 画面の選択肢 → ファイル名に使う略称
@@ -15,10 +16,14 @@ MAKERS = ["Panasonic", "マクセル", "Spard"]
 MAKER_ABBR = {"Panasonic": "pa", "マクセル": "ma", "Spard": "sp"}
 FULL_VOLTAGES = ["4.1V", "4.2V"]
 
-# 放電モード。CC: 電流を一定に（定電流）、CP: 電力を一定に（定電力）
+# 放電モード。CC: 電流を一定に（定電流）、CP: 電力を一定に（定電力）、
+# 連続半減: CC で終止電圧まで放電 → 負荷 OFF で待機 → 電流を半分にして放電 … を設定した回数くり返す
 MODE_CC = "CC"
 MODE_CP = "CP"
-MODES = [MODE_CC, MODE_CP]
+MODE_HALF = "HALF"
+MODES = [MODE_CC, MODE_CP, MODE_HALF]
+HALF_NAME = "連続半減"
+MODE_NAMES = {MODE_CC: "CC", MODE_CP: "CP", MODE_HALF: HALF_NAME}  # CSV の「放電モード」
 
 CSV_ENCODING = "utf-8-sig"  # UTF-8 BOM 付き（Excel で文字化けしない）
 CSV_NEWLINE = "\r\n"
@@ -40,6 +45,7 @@ END_REASON_ERROR = "異常終了"
 PHASE_PRE = "前休止"
 PHASE_DISCHARGE = "放電"
 PHASE_POST = "後休止"
+PHASE_WAIT = "待機"   # 連続半減で、終止電圧に達してから次の回の放電までの負荷 OFF
 
 
 # ---- ファイル名 ----
@@ -57,7 +63,8 @@ def make_base_name(start: datetime, mode: str, setpoint: float | None, cutoff: f
     """出力フォルダとファイルの名前（同じ名前にする）。
     CC: <YYYYMMDD_HHMM>_SDL_<放電電流 mA>mA_<終止電圧 mV>mV[_<メーカー略称>]
     CP: <YYYYMMDD_HHMM>_SDL_CP_<放電電力 mW>mW_<終止電圧 mV>mV[_<メーカー略称>]
-    メーカーが未選択なら _ ごと省く。setpoint は CC なら放電電流 [A]、CP なら放電電力 [W]"""
+    連続半減: CC と同じ（電流は初期電流）で、一番後ろに _連続半減
+    メーカーが未選択なら _ ごと省く。setpoint は CC・連続半減なら放電電流 [A]、CP なら放電電力 [W]"""
     return name_from(start.strftime("%Y%m%d_%H%M"), mode, setpoint, cutoff, maker)
 
 
@@ -71,6 +78,8 @@ def name_from(stamp: str, mode: str, setpoint: float | None, cutoff: float | Non
     parts.append(_milli(cutoff, "mV"))
     if maker:
         parts.append(MAKER_ABBR[maker])
+    if mode == MODE_HALF:
+        parts.append(HALF_NAME)
     return "_".join(parts)
 
 
@@ -83,6 +92,23 @@ def file_base_name(run_dir_name: str, number: str | None = None) -> str:
 def _milli(value: float | None, unit: str) -> str:
     """0.400 → '400mA' のように 1000 倍した整数に単位を付ける（入力は小数 3 桁まで）"""
     return f"{round(value * 1000)}{unit}" if value is not None else f"?{unit}"
+
+
+# ---- 連続半減 ----
+HALF_MIN_CURRENT = 0.001   # 最後の回の電流の下限 [A]
+CURRENT_STEP = 0.0001      # 半分にした電流を丸める単位 [A]（0.1 mA）
+
+
+def half_currents(initial: float, count: int) -> list[float]:
+    """各回の電流 [A]。初期電流から半分ずつ（0.1 mA 単位に四捨五入）。例: 0.4, 4 回 → [0.4, 0.2, 0.1, 0.05]"""
+    step = Decimal(str(CURRENT_STEP))
+    return [float((Decimal(str(initial)) / 2 ** k).quantize(step, rounding=ROUND_HALF_UP)) for k in range(count)]
+
+
+def format_current(value: float) -> str:
+    """電流の表示。小数 3 桁、0.1 mA の桁があるときだけ 4 桁（0.050 / 0.0125）"""
+    text = f"{value:.4f}"
+    return text[:-1] if text.endswith("0") else text
 
 
 def output_paths(folder: Path, base: str) -> dict[str, Path]:
@@ -173,6 +199,10 @@ class Integrator:
         self._last = (elapsed, current, power)
         return self.mah, self.wh
 
+    def restart(self) -> None:
+        """次の add を区切りにする（連続半減の待機をはさんだ放電どうしを、つないで積算しない）"""
+        self._last = None
+
 
 # ---- 測定行 ----
 @dataclass(frozen=True)
@@ -187,7 +217,8 @@ class Sample:
     voltage_text: str = ""
     current_text: str = ""
     power_text: str = ""
-    phase: str = ""  # 区間（PHASE_PRE / PHASE_DISCHARGE / PHASE_POST）
+    phase: str = ""  # 区間（PHASE_PRE / PHASE_DISCHARGE / PHASE_WAIT / PHASE_POST）
+    step: int = 0    # 連続半減の何回目か（放電1・待機1 … と書く）。0 なら区間だけ
 
     def row(self) -> list[str]:
         return [
@@ -198,7 +229,7 @@ class Sample:
             self.power_text or f"{self.power:.4f}",
             f"{self.mah:.3f}",
             f"{self.wh:.4f}",
-            self.phase,
+            f"{self.phase}{self.step}" if self.step else self.phase,
         ]
 
 
@@ -272,8 +303,12 @@ class TestInfo:
     post_rest: float = 0.0
     pre_voltage: float | None = None    # 放電前電圧（前休止の最後）[V]
     post_voltage: float | None = None   # 放電後電圧（後休止の最後）[V]
-    mode: str = MODE_CC                 # 放電モード（CC / CP）
+    mode: str = MODE_CC                 # 放電モード（CC / CP / 連続半減）
     power: float | None = None          # 放電電力 [W]（CP モードのとき）
+    wait: float | None = None           # 連続半減の待機 [s]
+    count: int | None = None            # 連続半減の放電回数
+    step_currents: tuple[float, ...] = ()  # 連続半減で放電した各回の電流 [A]
+    step_mah: tuple[float, ...] = ()       # 同じく各回の放電容量 [mAh]
 
 
 def format_interval(value: float) -> str:
@@ -298,10 +333,14 @@ def info_lines(info: TestInfo) -> str:
         ["満充電電圧[V]", full],
         ["型番", info.model or ""],
         ["番号", info.number or ""],
-        ["放電モード", info.mode],
-        # 使わないほうの設定値は空欄にする（行の並びはモードによらず同じ）
+        ["放電モード", MODE_NAMES.get(info.mode, info.mode)],
+        # 使わない設定値は空欄にする（行の並びはモードによらず同じ）。連続半減の放電電流は初期電流
         ["放電電流[A]", f"{info.current:.3f}" if info.current is not None else ""],
         ["放電電力[W]", f"{info.power:.3f}" if info.power is not None else ""],
+        ["待機[s]", format_seconds(info.wait) if info.wait is not None else ""],
+        ["放電回数", str(info.count) if info.count is not None else ""],
+        ["各回の電流[A]"] + [format_current(i) for i in info.step_currents],
+        ["各回の放電容量[mAh]"] + [f"{m:.1f}" for m in info.step_mah],
         ["終止電圧[V]", f"{info.cutoff:.3f}"],
         ["放電容量[mAh]", f"{info.mah:.1f}"],
         ["電力量[Wh]", f"{info.wh:.3f}"],

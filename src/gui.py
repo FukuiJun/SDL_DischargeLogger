@@ -72,9 +72,10 @@ CLOSE_QUESTION = "放電中です。停止・保存して終了しますか？"
 # （CP モードは、終止電圧のときに流れる電流 = 電力 ÷ 終止電圧 で判断する）
 CONFIRM_CURRENT_A = 2.0
 CONFIRM_CUTOFF_V = 3.0
-MODE_LABELS = {recorder.MODE_CC: "CC 定電流", recorder.MODE_CP: "CP 定電力"}
-SETPOINT_LABELS = {recorder.MODE_CC: "放電電流 [A]", recorder.MODE_CP: "放電電力 [W]"}
-CHIP_SETPOINT_NAMES = {recorder.MODE_CC: "電流", recorder.MODE_CP: "電力"}
+MODE_LABELS = {recorder.MODE_CC: "CC 定電流", recorder.MODE_CP: "CP 定電力", recorder.MODE_HALF: recorder.HALF_NAME}
+SETPOINT_LABELS = {recorder.MODE_CC: "放電電流 [A]", recorder.MODE_CP: "放電電力 [W]", recorder.MODE_HALF: "初期電流 [A]"}
+CHIP_SETPOINT_NAMES = {recorder.MODE_CC: "電流", recorder.MODE_CP: "電力", recorder.MODE_HALF: "電流"}
+LCD_MODES = {recorder.MODE_HALF: "CC"}  # 液晶のモード表示（連続半減は SDL を CC で動かす）
 VON_OFFSET_V = 0.1  # 放電開始時に SDL の Von を 終止電圧 − 0.1 V にする（負荷側終止電圧。いつも設定する）
 CLOSE_DETAIL = "はい: 保存して終了\nいいえ: 破棄して終了（データは残りません）\nキャンセル: 放電を続ける"
 
@@ -122,6 +123,33 @@ def condition_warnings(cond) -> list[str]:
     if cond.cutoff <= CONFIRM_CUTOFF_V + 1e-9:
         items.append(f"終止電圧が {CONFIRM_CUTOFF_V:.1f} V 以下です（設定 {cond.cutoff:.3f} V）")
     return items
+
+
+def parse_count(text: str) -> int:
+    """連続半減の放電回数（整数）"""
+    lo, hi = settings_mod.COUNT_RANGE
+    try:
+        value = int(text.strip())
+    except ValueError:
+        value = None
+    if value is None or not lo <= value <= hi:
+        raise InputError(f"放電回数は {lo}〜{hi} 回の整数で入力してください")
+    return value
+
+
+def elide_middle(text: str, max_width: int, measure) -> str:
+    """幅に収まらなければ途中を … で省く（先頭の「保存予定: 」と末尾の _no3.csv などが残るように両端を残す）。
+    measure は文字列の幅 [px] を返す関数"""
+    if measure(text) <= max_width:
+        return text
+    keep = len(text) - 1
+    while keep > 2:
+        head = (keep + 1) // 2
+        short = text[:head] + "…" + text[len(text) - (keep - head):]
+        if measure(short) <= max_width:
+            return short
+        keep -= 1
+    return "…"
 
 
 def format_span(hours: float | None) -> str:
@@ -348,7 +376,7 @@ class App:
 
         self._build()
         for var in (self.maker_var, self.full_var, self.current_var, self.cutoff_var, self.interval_var,
-                    self.number_var, self.mode_var, self.power_var):
+                    self.number_var, self.mode_var, self.power_var, self.wait_var, self.count_var):
             var.trace_add("write", lambda *_: self._refresh())
         self._refresh()
         root.after(POLL_MS, self._poll)
@@ -450,6 +478,11 @@ class App:
         self.state_label.pack(side="left", padx=(px(10), px(0)))
         self.plan_label = tk.Label(row, text="", font=f.ui_px(13), bg=bg, fg="#c9c9c9", anchor="e")
         self.plan_label.pack(side="right")
+        # 保存予定のファイル名が長いとき（連続半減・番号など）は、状態表示に重ならないよう途中を … で省く
+        self._status_row = row
+        self._plan_full = ""
+        self._plan_font = tkfont.Font(root=self.root, font=f.ui_px(13))
+        row.bind("<Configure>", lambda _e: self._fit_plan())
         hline(lcd, C["lcd-rule"]).grid(row=1, column=0, sticky="ew")
 
         # ②-2 数値表示（3 列×2 段、右揃え）
@@ -525,6 +558,8 @@ class App:
         self.mode_var = tk.StringVar(value=self.settings.mode)
         self.current_var = tk.StringVar(value=f"{self.settings.current:.3f}")
         self.power_var = tk.StringVar(value=f"{self.settings.power:.3f}")
+        self.wait_var = tk.StringVar(value=recorder.format_seconds(self.settings.wait))
+        self.count_var = tk.StringVar(value=str(self.settings.count))
         self.cutoff_var = tk.StringVar(value=f"{self.settings.cutoff:.3f}")
         self.interval_var = tk.StringVar(value=recorder.format_interval(self.settings.interval))
         self.folder_var = tk.StringVar(value=self.settings.folder)
@@ -542,6 +577,7 @@ class App:
         self.setpoint_label = tk.StringVar(value=SETPOINT_LABELS[recorder.MODE_CC])
         for r, (label, var, font) in enumerate(rows):
             r = r + 1 if r else r  # 放電モードの行の分ずらす
+            r = r + 1 if r >= 3 else r  # 連続半減の待機・回数の行の分ずらす
             if r == 2:
                 tk.Label(form, textvariable=self.setpoint_label, **lab).grid(row=r, column=0, sticky="w", pady=px(4))
             else:
@@ -563,8 +599,21 @@ class App:
         self.condition_boxes.append(self.number_box)
         self.model_entry = self.condition_boxes[0].entry
         self.number_entry = self.number_box.entry
-        self.setpoint_entry = self.condition_boxes[1].entry  # 放電電流（CC）／放電電力（CP）
-        r = len(rows) + 1
+        self.setpoint_entry = self.condition_boxes[1].entry  # 放電電流（CC）／放電電力（CP）／初期電流（連続半減）
+        # 連続半減：待機 [s]・放電回数と、最後の回の電流（連続半減を選んだときだけ表示）
+        self.half_label = tk.Label(form, text="待機 [s]", **lab)
+        self.half_label.grid(row=3, column=0, sticky="w", pady=px(4))
+        self.half_cell = tk.Frame(form, bg=C["panel"])
+        self.half_cell.grid(row=3, column=1, sticky="ew", pady=px(4))
+        self.wait_box = BoxEntry(self.half_cell, self.wait_var, f.num_px(15), width=68)
+        self.wait_box.frame.pack(side="left")
+        tk.Label(self.half_cell, text="回数", **lab).pack(side="left", padx=(px(12), px(6)))
+        self.count_box = BoxEntry(self.half_cell, self.count_var, f.num_px(15), width=48)
+        self.count_box.frame.pack(side="left")
+        self.half_hint = tk.Label(self.half_cell, text="", bg=C["panel"], fg=C["text-sub"], font=f.ui_px(12))
+        self.half_hint.pack(side="left", padx=(px(10), 0))
+        self.condition_boxes += [self.wait_box, self.count_box]
+        r = len(rows) + 2
         tk.Label(form, text="保存先", **lab).grid(row=r, column=0, sticky="w", pady=px(4))
         ff = tk.Frame(form, bg=C["panel"])
         ff.grid(row=r, column=1, sticky="ew", pady=px(4))
@@ -672,7 +721,9 @@ class App:
         s = self.session
         if s is not None and self.state in (STARTING, DISCHARGING, RECONNECTING, STOPPING):
             c = s.cond
-            return c.setpoint, c.cutoff, c.interval, c.full_voltage, c.maker, c.mode
+            # 連続半減は、いまの回の電流を出す
+            setpoint = s.step_current if c.mode == recorder.MODE_HALF else c.setpoint
+            return setpoint, c.cutoff, c.interval, c.full_voltage, c.maker, c.mode
         return self._input_conditions()
 
     def _refresh(self) -> None:
@@ -700,16 +751,24 @@ class App:
 
         # ②-1 ステータス行（前休止・後休止のあいだは負荷 OFF）
         shown = self._shown_conditions()
-        self.mode_label.configure(text=shown[5])
+        self.mode_label.configure(text=LCD_MODES.get(shown[5], shown[5]))
         load_on = s in (DISCHARGING, RECONNECTING, STOPPING) and self._phase() in (None, recorder.PHASE_DISCHARGE)
         self.load_label.configure(text="LOAD ON" if load_on else "LOAD OFF")
         self._update_state_label()
-        self.plan_label.configure(text=self._plan_text())
+        self._plan_full = self._plan_text()
+        self._fit_plan()
 
         # ③ 入力（放電中は備考のみ編集可）。放電モードで「放電電流」「放電電力」の欄を入れ替える
         editable = not running
         mode = self.mode_var.get()
         self.setpoint_label.set(SETPOINT_LABELS[mode])
+        if mode == recorder.MODE_HALF:
+            self.half_label.grid()
+            self.half_cell.grid()
+            self._update_half_hint()
+        else:
+            self.half_label.grid_remove()
+            self.half_cell.grid_remove()
         setpoint_var = self.power_var if mode == recorder.MODE_CP else self.current_var
         if str(self.setpoint_entry.cget("textvariable")) != str(setpoint_var):
             self.setpoint_entry.configure(textvariable=setpoint_var)
@@ -759,12 +818,46 @@ class App:
             STOPPING: ("停止しています…", C["lcd-white"]),
             DONE: (f"完了: {self.result.end_reason}" if self.result else "完了", C["lcd-white"]),
         }[s]
-        if s == DISCHARGING and self.session is not None and self._phase() in (recorder.PHASE_PRE,
-                                                                               recorder.PHASE_POST):
-            remaining = self.session.phase_remaining()
+        session = self.session
+        half = session is not None and session.cond.mode == recorder.MODE_HALF
+        if s == DISCHARGING and session is not None and self._phase() in (recorder.PHASE_PRE, recorder.PHASE_POST,
+                                                                          recorder.PHASE_WAIT):
+            remaining = session.phase_remaining()
             rest = f" 残り {display.fmt_remaining(remaining)}" if remaining is not None else ""
-            state_text, state_color = f"● {self._phase()}中{rest}", C["lcd-white"]
+            if self._phase() == recorder.PHASE_WAIT:
+                state_text = f"● 待機中  {session.step}/{session.cond.count} 回目のあと{rest}"
+            else:
+                state_text = f"● {self._phase()}中{rest}"
+            state_color = C["lcd-white"]
+        elif s == DISCHARGING and half and self._phase() == recorder.PHASE_DISCHARGE:
+            state_text = (f"● 放電中  {session.step}/{session.cond.count} 回目  "
+                          f"{recorder.format_current(session.step_current)} A")
         self.state_label.configure(text=state_text, fg=state_color)
+        self._fit_plan()
+
+    def _fit_plan(self) -> None:
+        """保存予定を、ステータス行の空いている幅に収める"""
+        width = self._status_row.winfo_width()
+        if width <= 1:  # まだ表示されていない
+            self.plan_label.configure(text=self._plan_full)
+            return
+        used = sum(w.winfo_reqwidth() for w in (self.mode_label, self.load_label, self.state_label)) + px(56)
+        self.plan_label.configure(text=elide_middle(self._plan_full, width - used, self._plan_font.measure))
+
+    def _update_half_hint(self) -> None:
+        """連続半減の最後の回の電流（1 mA を下回るときは赤）"""
+        current = try_number(self.current_var.get(), settings_mod.CURRENT_RANGE)
+        try:
+            count = parse_count(self.count_var.get())
+        except InputError:
+            count = None
+        if current is None or count is None:
+            self.half_hint.configure(text="最終 ---", fg=C["text-sub"])
+            return
+        final = recorder.half_currents(current, count)[-1]
+        low = final < recorder.HALF_MIN_CURRENT - 1e-9
+        self.half_hint.configure(text=f"最終 {recorder.format_current(final)} A",
+                                 fg=C["danger"] if low else C["text-sub"])
 
     def _plan_text(self) -> str:
         s = self.session
@@ -932,8 +1025,17 @@ class App:
     def read_conditions(self) -> Conditions:
         mode = self.mode_var.get()
         current = power = None
+        wait, count = 0.0, 1
         if mode == recorder.MODE_CP:
             power = parse_number(self.power_var.get(), "放電電力", *settings_mod.POWER_RANGE, "W", 3)
+        elif mode == recorder.MODE_HALF:
+            current = parse_number(self.current_var.get(), "初期電流", *settings_mod.CURRENT_RANGE, "A", 3)
+            wait = parse_number(self.wait_var.get(), "待機", *settings_mod.WAIT_RANGE, "秒", 0)
+            count = parse_count(self.count_var.get())
+            final = recorder.half_currents(current, count)[-1]
+            if final < recorder.HALF_MIN_CURRENT - 1e-9:
+                raise InputError(f"{count} 回目の電流が {recorder.format_current(final)} A になり、"
+                                 f"{recorder.HALF_MIN_CURRENT:.3f} A を下回ります。回数を減らすか初期電流を上げてください")
         else:
             current = parse_number(self.current_var.get(), "放電電流", *settings_mod.CURRENT_RANGE, "A", 3)
         cutoff = parse_number(self.cutoff_var.get(), "終止電圧", *settings_mod.CUTOFF_RANGE, "V", 3)
@@ -951,7 +1053,7 @@ class App:
         return Conditions(maker=self.maker_var.get() or None, full_voltage=self.full_var.get() or None,
                           model=self.model_var.get().strip(), current=current, cutoff=cutoff, interval=interval,
                           von=von, number=self.number_var.get(), pre_rest=pre_rest, post_rest=post_rest,
-                          mode=mode, power=power)
+                          mode=mode, power=power, wait=wait, count=count)
 
     def _sanitize_number(self) -> None:
         text = self.number_var.get()
@@ -989,6 +1091,9 @@ class App:
             self.power_var.set(f"{cond.power:.3f}")
         else:
             self.current_var.set(f"{cond.current:.3f}")
+        if cond.mode == recorder.MODE_HALF:
+            self.wait_var.set(recorder.format_seconds(cond.wait))
+            self.count_var.set(str(cond.count))
         self.cutoff_var.set(f"{cond.cutoff:.3f}")
         self.interval_var.set(recorder.format_interval(cond.interval))
         if self.rest_var.get():
@@ -1023,12 +1128,19 @@ class App:
         self.message(f"放電開始（{c.setpoint_text} / 終止 {c.cutoff:.3f} V{von}）")
 
     def _on_phase(self, phase: str) -> None:
-        """前休止 → 放電、放電 → 後休止 に変わった"""
+        """前休止 → 放電、放電 → 後休止、連続半減の 放電 → 待機 → 放電 に変わった"""
         self._refresh()
-        if self.session is None:
+        s = self.session
+        if s is None:
             return
-        if phase == recorder.PHASE_DISCHARGE:
-            self._discharge_message(self.session)
+        if phase == recorder.PHASE_DISCHARGE and s.step > 1:
+            self.message(f"待機を終えて {s.step} 回目を {recorder.format_current(s.step_current)} A で放電しています")
+        elif phase == recorder.PHASE_WAIT:
+            following = recorder.format_current(s.cond.currents[s.step])
+            self.message(f"{s.step} 回目が終止電圧に到達しました。{recorder.format_seconds(s.cond.wait)} 秒待機してから "
+                         f"{following} A で {s.step + 1} 回目を放電します（［ON/OFF］で終了）")
+        elif phase == recorder.PHASE_DISCHARGE:
+            self._discharge_message(s)
         elif phase == recorder.PHASE_POST:
             self.message(f"終止電圧に到達しました。負荷 OFF のまま "
                          f"{recorder.format_seconds(self.session.cond.post_rest)} 秒記録します（［ON/OFF］で終了）")
@@ -1130,6 +1242,9 @@ class App:
         else:
             head = {recorder.END_REASON_CUTOFF: "終止電圧に到達しました。",
                     recorder.END_REASON_MANUAL: "停止しました。"}.get(result.end_reason, f"{result.end_reason}で停止しました。")
+            if session is not None and session.cond.mode == recorder.MODE_HALF \
+                    and result.end_reason == recorder.END_REASON_CUTOFF:
+                head = f"{recorder.HALF_NAME}放電（{session.cond.count} 回）が終わりました。"
             text, level = f"{head}保存しました: {result.csv_path}", "info"
         if result.messages and level == "info":
             level = "error"
@@ -1280,6 +1395,13 @@ class App:
         if self.folder_var.get():
             s.folder = self.folder_var.get()
         s.mode = self.mode_var.get()
+        value = try_number(self.wait_var.get(), settings_mod.WAIT_RANGE)
+        if value is not None:
+            s.wait = value
+        try:
+            s.count = parse_count(self.count_var.get())
+        except InputError:
+            pass
         for name, var, rng in (("current", self.current_var, settings_mod.CURRENT_RANGE),
                                ("power", self.power_var, settings_mod.POWER_RANGE),
                                ("cutoff", self.cutoff_var, settings_mod.CUTOFF_RANGE),
