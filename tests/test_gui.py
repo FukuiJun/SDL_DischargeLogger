@@ -117,10 +117,10 @@ def test_disconnected_state(make_app):
     assert not app.onoff_btn.lit
     assert str(app.onoff_btn.frame["bg"]) == "#c9cdd1"
     assert str(app.graph_btn.button["bg"]) == "#e9ebed"  # 押せないときは灰色
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV.csv"
+    assert app._plan_full == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV.csv"
     app.radios[1].invoke()
     app.radios[5].invoke()  # 4.1V
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_pa.csv"
+    assert app._plan_full == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_pa.csv"
     assert [c["text"] for c in app.chip_values] == ["0.400 A", "3.500 V", "1.0 s", "4.1 V", "Panasonic"]
 
 
@@ -192,7 +192,7 @@ def test_discharge_auto_stop_saves(make_app, fake, dialogs, tmp_path):
     run_dir = app.session.run_dir  # 保存先の中の出力フォルダ（中のファイルと同じ名前）
     assert run_dir.parent == tmp_path and run_dir.name == app.session.base_name
     assert run_dir.name.endswith("_SDL_400mA_3500mV_ma")
-    assert app.plan_label["text"] == f"保存予定: {app.session.base_name}.csv"
+    assert app._plan_full == f"保存予定: {app.session.base_name}.csv"
     assert app.message_var.get().endswith("放電開始（0.400 A / 終止 3.500 V / Von 3.400 V）")
     assert not any(c[0] == "askyesno" for c in dialogs.calls)  # 初期値（0.400 A / 3.500 V）では確認を出さない
     assert str(app.model_entry["state"]) == "disabled"
@@ -219,7 +219,7 @@ def test_discharge_auto_stop_saves(make_app, fake, dialogs, tmp_path):
     assert csv_path.exists() and (app.session.run_dir / f"{base}.png").exists()
     assert app.message_var.get().endswith(f"終止電圧に到達しました。保存しました: {csv_path}")
     assert app.state_label["text"] == "完了: 終止電圧到達" and app.load_label["text"] == "LOAD OFF"
-    assert app.plan_label["text"] == f"保存済み: {base}.csv"
+    assert app._plan_full == f"保存済み: {base}.csv"
     # 自動保存のあとも CSV保存を押せる（もう一度保存すると <ベース名>_2.csv）
     assert enabled(app) == {"onoff_btn": True, "csv_btn": True, "graph_btn": True, "connect_btn": True}
     assert str(app.graph_btn.button["bg"]) == "#b7282e"  # グラフ保存は押せるとき茜色
@@ -287,7 +287,7 @@ def test_onoff_stop_then_csv_save(make_app, fake, dialogs, tmp_path):
     assert pump(app.root, lambda: app.state == "done")
     assert not fake.load_on and not app.onoff_btn.lit
     base = app.session.base_name
-    assert app.plan_label["text"] == "未保存（［CSV保存］で保存）"
+    assert app._plan_full == "未保存（［CSV保存］で保存）"
     assert enabled(app)["csv_btn"]
     assert not (app.session.run_dir / f"{base}.csv").exists() and (app.session.run_dir / f"{base}_partial.csv").exists()
     app.note_text.insert("end", "→保存時点")
@@ -298,7 +298,7 @@ def test_onoff_stop_then_csv_save(make_app, fake, dialogs, tmp_path):
     assert not (app.session.run_dir / f"{base}_partial.csv").exists()
     assert '備考,"メモ→保存時点"' in csv_path.read_text(encoding="utf-8-sig")
     assert app.message_var.get().endswith(f"保存しました: {csv_path}")
-    assert app.plan_label["text"] == f"保存済み: {base}.csv"
+    assert app._plan_full == f"保存済み: {base}.csv"
     # 保存したあとも何度でも保存できる。上書きせずに _2, _3 … を付ける（備考は押した時点の内容）
     assert enabled(app)["csv_btn"]
     app.note_text.insert("end", "→2回目")
@@ -309,7 +309,7 @@ def test_onoff_stop_then_csv_save(make_app, fake, dialogs, tmp_path):
     assert '備考,"メモ→保存時点→2回目"' in second.read_text(encoding="utf-8-sig")
     assert '備考,"メモ→保存時点"' in csv_path.read_text(encoding="utf-8-sig")  # 1 回目のファイルはそのまま
     assert app.message_var.get().endswith(f"保存しました: {second}")
-    assert app.plan_label["text"] == f"保存済み: {base}_2.csv"
+    assert app._plan_full == f"保存済み: {base}_2.csv"
     assert enabled(app)["csv_btn"]
 
 
@@ -709,7 +709,7 @@ def test_number_field(make_app, fake, tmp_path):
     assert app.number_var.get() == "x" * 20
     app.number_var.set("7")
     app.full_var.set("4.1V")
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_no7.csv"
+    assert app._plan_full == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_no7.csv"
     connect(app, fake, tmp_path)
     start(app)
     assert app.session.base_name.endswith("_SDL_400mA_3500mV_no7") and "4v1" not in app.session.base_name
@@ -847,7 +847,7 @@ def test_cp_mode_switches_setpoint_field(make_app, tmp_path, app_dir):
     assert app.mode_label["text"] == "CP"
     assert app.chip_names[0]["text"] == "電力" and app.chip_values[0]["text"] == "1.500 W"
     assert pump(app.root, lambda: app.plot.ax_i.get_title(loc="left") == "電力 [W]")  # グラフは次の更新で
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_CP_1500mW_3500mV.csv"
+    assert app._plan_full == "保存予定: YYYYMMDD_HHMM_SDL_CP_1500mW_3500mV.csv"
     app.power_var.set("2.25")
     cond = app.read_conditions()
     assert cond.mode == "CP" and cond.power == 2.25 and cond.current is None
@@ -920,7 +920,7 @@ def test_half_mode_fields(make_app, app_dir, tmp_path):
     assert app.setpoint_label.get() == "初期電流 [A]" and app.mode_label["text"] == "CC"
     assert app.wait_var.get() == "600" and app.count_var.get() == "4"
     assert app.half_hint["text"] == "最終 0.050 A"
-    assert app.plan_label["text"] == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_連続半減.csv"
+    assert app._plan_full == "保存予定: YYYYMMDD_HHMM_SDL_400mA_3500mV_連続半減.csv"
     cond = app.read_conditions()
     assert cond.mode == "HALF" and cond.current == 0.4 and cond.wait == 600 and cond.count == 4
     app.count_var.set("10")

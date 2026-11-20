@@ -416,7 +416,7 @@ def test_pre_rest_keeps_load_off_then_discharges(fake, tmp_path):
     try:
         assert s.phase == "前休止" and not fake.load_on
         assert ":SOUR:CURR:LEV:IMM 1.000" in fake.commands  # CC の設定は開始時に済ませる
-        assert s.phase_remaining() is not None and s.phase_remaining() <= 0.6
+        assert s.phase_remaining() is not None and s.phase_remaining() <= 0.6 + 1e-6  # Windows は時計の刻みが粗い
         assert wait_until(lambda: s.phase == "放電")
         assert fake.load_on
         assert wait_until(lambda: len([x for x in samples_so_far(s) if x.phase == "放電"]) >= 3)
