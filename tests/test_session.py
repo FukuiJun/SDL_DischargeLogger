@@ -513,11 +513,11 @@ def test_series_mode_halves_current_after_wait(fake, tmp_path):
     s = make_session(fake, tmp_path, cond)
     s.start()
     assert s.base_name.endswith("_SDL_1000mA_3000mV_pa_連続放電") and s.run_dir.name == s.base_name
-    phases = []
+    phases = []  # 区間の移り変わり（何回目かは下で CSV の区間 放電1・待機1 … で確かめる）
     end = time.monotonic() + 20
     while not s.finished and time.monotonic() < end:
-        if not phases or phases[-1] != (s.phase, s.step):
-            phases.append((s.phase, s.step))
+        if not phases or phases[-1] != s.phase:
+            phases.append(s.phase)
             if s.phase == "放電":
                 time.sleep(0.35)          # 少し放電してから
                 fake.voltage_override = 2.9  # 終止電圧を下回らせる
@@ -527,7 +527,8 @@ def test_series_mode_halves_current_after_wait(fake, tmp_path):
         time.sleep(0.02)
     result = s.wait(5)
     assert result.end_reason == "終止電圧到達"
-    assert phases == [("放電", 1), ("待機", 1), ("放電", 2), ("待機", 2), ("放電", 3)]
+    assert phases == ["放電", "待機", "放電", "待機", "放電"]
+    assert s.step == 3 and s.step_current == 0.25
     levels = [c for c in fake.commands if c.startswith(":SOUR:CURR:LEV:IMM")]
     assert levels == [":SOUR:CURR:LEV:IMM 1.000", ":SOUR:CURR:LEV:IMM 0.500", ":SOUR:CURR:LEV:IMM 0.250"]
     assert not fake.load_on and fake.von == 0.0  # 終わったら Von を元に戻す

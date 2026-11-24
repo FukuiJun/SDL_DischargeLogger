@@ -472,11 +472,10 @@ class DischargeSession:
         if self._sample() == "done":
             return False
         after_wait = self.phase == PHASE_WAIT
+        next_step = self.step + 1 if after_wait else self.step
         try:
             if after_wait:
-                self.step += 1
-                self.step_current = self.cond.currents[self.step - 1]
-                self.client.setup_cc(self.step_current)
+                self.client.setup_cc(self.cond.currents[next_step - 1])
             self.client.set_load(True)
             on = self.client.load_state()
         except SDLError as e:
@@ -489,6 +488,8 @@ class DischargeSession:
         self._marks.append(elapsed)
         self._integrator.restart()  # 待機をはさんだ前の回とつないで積算しない
         self._step_starts.append(self._integrator.mah)
+        # 回数は負荷が ON になってから、区間と一緒に進める（画面が「待機中 2/4 回目のあと」のように途中の状態を出さないように）
+        self.step, self.step_current = next_step, self.cond.currents[next_step - 1]
         self._set_phase(PHASE_DISCHARGE, None)
         if after_wait:
             log.info("待機を終えて %d 回目を放電開始 %sA（経過 %.1fs）", self.step,
