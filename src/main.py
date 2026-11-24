@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import applog  # noqa: E402
 import sdl_client  # noqa: E402
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 log = logging.getLogger("sdl.main")
 
 
