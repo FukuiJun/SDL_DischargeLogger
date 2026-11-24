@@ -335,7 +335,7 @@ def png_title_lines(base: str | None, model: str, current: float | None, cutoff:
         rest.append(f"放電前電圧: {pre_voltage:.3f} V")
     if post_voltage is not None:
         rest.append(f"放電後電圧: {post_voltage:.3f} V")
-    lines.extend(extra)  # 連続半減の設定・各回の放電容量
+    lines.extend(extra)  # 連続放電の設定・各回の放電容量
     if rest:
         lines.append(" / ".join(rest))
     return lines

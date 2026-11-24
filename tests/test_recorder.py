@@ -102,51 +102,55 @@ def test_final_csv_layout(tmp_path):
     assert lines[8] == "放電モード,CC"
     assert lines[9] == "放電電流[A],1.000"
     assert lines[10] == "放電電力[W],"  # CC モードのときは空欄
-    assert lines[11] == "待機[s],"  # 連続半減でないときは空欄
-    assert lines[12] == "放電回数,"
-    assert lines[13] == "各回の電流[A]"
-    assert lines[14] == "各回の放電容量[mAh]"
-    assert lines[15] == "終止電圧[V],3.000"
-    assert lines[16] == "放電容量[mAh],2702.5"
-    assert lines[17] == "電力量[Wh],9.874"
-    assert lines[18] == "取得周期[s],1.0"
-    assert lines[19] == "オフセット 放電前[s],0"
-    assert lines[20] == "オフセット 放電後[s],0"
-    assert lines[21] == "放電前電圧[V],"  # オフセットを入れないときは空欄
-    assert lines[22] == "放電後電圧[V],"
-    assert lines[23] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
-    assert lines[24] == '備考,"25℃恒温槽内。2回目"'
-    assert lines[25] == ""
-    assert lines[26] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh],区間"
-    assert lines[27].startswith("2026/10/01 14:30:05.000,0.000,")
-    assert len([ln for ln in lines[27:] if ln]) == 3
+    assert lines[11] == "電流の倍率,"  # 連続放電でないときは空欄
+    assert lines[12] == "待機[s],"
+    assert lines[13] == "放電回数,"
+    assert lines[14] == "各回の電流[A]"
+    assert lines[15] == "各回の放電容量[mAh]"
+    assert lines[16] == "終止電圧[V],3.000"
+    assert lines[17] == "放電容量[mAh],2702.5"
+    assert lines[18] == "電力量[Wh],9.874"
+    assert lines[19] == "取得周期[s],1.0"
+    assert lines[20] == "オフセット 放電前[s],0"
+    assert lines[21] == "オフセット 放電後[s],0"
+    assert lines[22] == "放電前電圧[V],"  # オフセットを入れないときは空欄
+    assert lines[23] == "放電後電圧[V],"
+    assert lines[24] == '機器,"Siglent Technologies,SDL1020X-E,SDL001,1.1"'
+    assert lines[25] == '備考,"25℃恒温槽内。2回目"'
+    assert lines[26] == ""
+    assert lines[27] == "日時,経過時間[s],電圧[V],電流[A],電力[W],放電容量[mAh],電力量[Wh],区間"
+    assert lines[28].startswith("2026/10/01 14:30:05.000,0.000,")
+    assert len([ln for ln in lines[28:] if ln]) == 3
 
 
-def test_final_csv_half_mode(tmp_path):
-    """連続半減：放電モードは 連続半減、待機・回数・各回の電流と放電容量が入る（各回は横に並べる）"""
-    out = _write(tmp_path, _info(mode="HALF", current=0.4, wait=600.0, count=4,
+def test_final_csv_series_mode(tmp_path):
+    """連続放電：放電モードは 連続放電、倍率・待機・回数・各回の電流と放電容量が入る（各回は横に並べる）"""
+    out = _write(tmp_path, _info(mode="SERIES", current=0.4, ratio=0.5, wait=600.0, count=4,
                                  step_currents=(0.4, 0.2, 0.1, 0.05), step_mah=(2702.5, 150.25, 40.0, 10.0)))
     rows = list(csv.reader(out.read_text(encoding="utf-8-sig").splitlines()))
     d = {r[0]: r[1:] for r in rows if r}
-    assert d["放電モード"] == ["連続半減"] and d["放電電流[A]"] == ["0.400"]
-    assert d["待機[s]"] == ["600"] and d["放電回数"] == ["4"]
+    assert d["放電モード"] == ["連続放電"] and d["放電電流[A]"] == ["0.400"]
+    assert d["電流の倍率"] == ["0.5"] and d["待機[s]"] == ["600"] and d["放電回数"] == ["4"]
     assert d["各回の電流[A]"] == ["0.400", "0.200", "0.100", "0.050"]
     assert d["各回の放電容量[mAh]"] == ["2702.5", "150.2", "40.0", "10.0"]
 
 
-def test_half_currents_and_name():
-    """連続半減：電流は半分ずつ 0.1 mA 単位に四捨五入。名前は CC と同じ並びで一番後ろに _連続半減"""
-    assert recorder.half_currents(0.4, 7) == [0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.0063]
-    assert [recorder.format_current(i) for i in recorder.half_currents(0.4, 6)] == [
+def test_series_currents_and_name():
+    """連続放電：電流は回ごとに倍率をかけ 0.1 mA 単位に四捨五入。名前は CC と同じ並びで一番後ろに _連続放電"""
+    assert recorder.series_currents(0.4, 0.5, 7) == [0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.0063]
+    assert [recorder.format_current(i) for i in recorder.series_currents(0.4, 0.5, 6)] == [
         "0.400", "0.200", "0.100", "0.050", "0.025", "0.0125"]
-    assert recorder.make_base_name(START, "HALF", 0.4, 3.0, "Panasonic") == "20261001_1430_SDL_400mA_3000mV_pa_連続半減"
-    assert recorder.make_base_name(START, "HALF", 0.4, 3.0, None) == "20261001_1430_SDL_400mA_3000mV_連続半減"
-    assert recorder.file_base_name("20261001_1430_SDL_400mA_3000mV_pa_連続半減", "3") == \
-        "20261001_1430_SDL_400mA_3000mV_pa_連続半減_no3"
+    assert recorder.series_currents(1.0, 0.8, 4) == [1.0, 0.8, 0.64, 0.512]
+    assert recorder.series_currents(0.4, 1.0, 3) == [0.4, 0.4, 0.4]  # 倍率 1 なら毎回同じ電流
+    assert recorder.format_ratio(0.5) == "0.5" and recorder.format_ratio(1.0) == "1"
+    assert recorder.make_base_name(START, "SERIES", 0.4, 3.0, "Panasonic") == "20261001_1430_SDL_400mA_3000mV_pa_連続放電"
+    assert recorder.make_base_name(START, "SERIES", 0.4, 3.0, None) == "20261001_1430_SDL_400mA_3000mV_連続放電"
+    assert recorder.file_base_name("20261001_1430_SDL_400mA_3000mV_pa_連続放電", "3") == \
+        "20261001_1430_SDL_400mA_3000mV_pa_連続放電_no3"
 
 
 def test_sample_row_step():
-    """連続半減の区間は 放電1・待機1 … と書く"""
+    """連続放電の区間は 放電1・待機1 … と書く"""
     s = Sample(START, 1.0, 3.5, 0.2, 0.7, 1.0, 0.001, phase="待機", step=2)
     assert s.row()[-1] == "待機2"
 

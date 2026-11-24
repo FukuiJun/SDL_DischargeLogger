@@ -19,7 +19,7 @@ def test_roundtrip_only_allowed_keys(app_dir, tmp_path):
     assert settings.save(s)
     data = json.loads((app_dir / "sdl_logger_settings.json").read_text(encoding="utf-8"))
     assert set(data) == {"host", "port", "folder", "mode", "current", "power", "cutoff", "interval", "keep_awake",
-                         "sound", "rest", "pre_rest", "post_rest", "wait", "count"}
+                         "sound", "rest", "pre_rest", "post_rest", "wait", "count", "ratio"}
     assert settings.load() == s
 
 
@@ -62,3 +62,13 @@ def test_options_default_on_and_saved(app_dir):
     loaded = settings.load()
     assert loaded.sound  # bool でない値は無視して初期値
     assert not hasattr(loaded, "auto_von")  # v1.1.0 までの［負荷側終止電圧］は読まない（Von はいつも設定する）
+
+
+def test_series_settings_and_old_mode(app_dir):
+    """連続放電の倍率は初期値 0.5、1 より大きい値は読まない。v1.2.0 の「連続半減」（HALF）は連続放電にする"""
+    assert settings.load().ratio == 0.5
+    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"mode": "HALF", "ratio": 1.5}), encoding="utf-8")
+    s = settings.load()
+    assert s.mode == "SERIES" and s.ratio == 0.5
+    (app_dir / "sdl_logger_settings.json").write_text(json.dumps({"ratio": 0.8}), encoding="utf-8")
+    assert settings.load().ratio == 0.8

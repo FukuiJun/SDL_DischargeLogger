@@ -211,7 +211,7 @@ class SDLClient:
         with self._lock:
             self.write(":SOUR:FUNC CURR")
             self.write(f":SOUR:CURR:IRANG {current_range_for(current)}")
-            # 連続半減で 0.1 mA の桁が出たときだけ 4 桁で送る（0.0125 など）
+            # 連続放電で 0.1 mA の桁が出たときだけ 4 桁で送る（0.0125 など）
             self.write(f":SOUR:CURR:LEV:IMM {current:.4f}" if round(current, 3) != round(current, 4)
                        else f":SOUR:CURR:LEV:IMM {current:.3f}")
 

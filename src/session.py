@@ -11,8 +11,8 @@ GUI と CLI で共通に使う。測定は別スレッドで行い、進行は e
 オフセット（Conditions.pre_rest / post_rest）を入れると、負荷 OFF のまま電圧だけを記録する区間を
 放電の前（前休止）と、終止電圧で負荷を OFF にしたあと（後休止）に置く。経過時間の 0 は測定開始。
 
-連続半減（Conditions.mode = MODE_HALF）は、終止電圧に達したら負荷 OFF のまま wait 秒記録し（待機）、
-電流を半分にして次の回を放電する。これを count 回くり返し、最後の回は待機せずに終える（後休止があればそれへ）。
+連続放電（Conditions.mode = MODE_SERIES）は、終止電圧に達したら負荷 OFF のまま wait 秒記録し（待機）、
+電流に ratio をかけて次の回を放電する。これを count 回くり返し、最後の回は待機せずに終える（後休止があればそれへ）。
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from pathlib import Path
 import plotting
 import recorder
 from recorder import (END_REASON_COMM_LOST, END_REASON_CUTOFF, END_REASON_ERROR, END_REASON_MANUAL,
-                      END_REASON_WRITE_ERROR, MODE_CC, MODE_CP, MODE_HALF, PHASE_DISCHARGE, PHASE_POST, PHASE_PRE,
+                      END_REASON_WRITE_ERROR, MODE_CC, MODE_CP, MODE_SERIES, PHASE_DISCHARGE, PHASE_POST, PHASE_PRE,
                       PHASE_WAIT, Integrator, PartialWriter, Sample, TestInfo)
 from sdl_client import SDLClient, SDLConnectionError, SDLError, SDLResponseError
 
@@ -49,37 +49,39 @@ class Conditions:
     maker: str | None
     full_voltage: str | None
     model: str
-    current: float | None     # 放電電流 [A]（CC モード。連続半減は初期電流。CP モードのときは None）
+    current: float | None     # 放電電流 [A]（CC モード。連続放電は初期電流。CP モードのときは None）
     cutoff: float
     interval: float
     von: float | None = None  # 開始時に SDL に設定する Von [V]（None なら設定しない）
     number: str = ""          # 番号（任意。半角の英数字と - _。ファイル名と CSV に入れる）
     pre_rest: float = 0.0     # オフセット：放電の前に負荷 OFF のまま電圧を記録する時間 [s]（0 なら無し）
     post_rest: float = 0.0    # オフセット：終止電圧で負荷を OFF にしたあと電圧を記録する時間 [s]（0 なら無し）
-    mode: str = MODE_CC       # 放電モード。CC: 電流を一定に、CP: 電力を一定に、MODE_HALF: 連続半減
+    mode: str = MODE_CC       # 放電モード。CC: 電流を一定に、CP: 電力を一定に、MODE_SERIES: 連続放電
     power: float | None = None  # 放電電力 [W]（CP モードのとき）
-    wait: float = 0.0         # 連続半減：終止電圧に達してから次の回までの待機 [s]
-    count: int = 1            # 連続半減：放電回数
+    wait: float = 0.0         # 連続放電：終止電圧に達してから次の回までの待機 [s]
+    count: int = 1            # 連続放電：放電回数
+    ratio: float = recorder.DEFAULT_RATIO  # 連続放電：次の回の電流にかける倍率（1 以下）
 
     @property
     def setpoint(self) -> float | None:
-        """設定した量（CC モードは放電電流 [A]、連続半減は初期電流 [A]、CP モードは放電電力 [W]）"""
+        """設定した量（CC モードは放電電流 [A]、連続放電は初期電流 [A]、CP モードは放電電力 [W]）"""
         return self.power if self.mode == MODE_CP else self.current
 
     @property
     def currents(self) -> list[float]:
-        """各回の電流 [A]（連続半減は初期電流から半分ずつ。CC は 1 回だけ）"""
-        if self.mode == MODE_HALF:
-            return recorder.half_currents(self.current, self.count)
+        """各回の電流 [A]（連続放電は初期電流に回ごとに倍率をかける。CC は 1 回だけ）"""
+        if self.mode == MODE_SERIES:
+            return recorder.series_currents(self.current, self.ratio, self.count)
         return [self.current]
 
     @property
     def setpoint_text(self) -> str:
-        """画面・ログに出す設定（「0.400 A」「CP 1.500 W」「連続半減 初期 0.400 A / 4 回 / 待機 600 s」）"""
+        """画面・ログに出す設定（「0.400 A」「CP 1.500 W」「連続放電 初期 0.400 A / 倍率 0.5 / 4 回 / 待機 600 s」）"""
         if self.mode == MODE_CP:
             return f"CP {self.power:.3f} W"
-        if self.mode == MODE_HALF:
-            return (f"{recorder.HALF_NAME} 初期 {self.current:.3f} A / {self.count} 回 / "
+        if self.mode == MODE_SERIES:
+            return (f"{recorder.SERIES_NAME} 初期 {self.current:.3f} A / 倍率 {recorder.format_ratio(self.ratio)} / "
+                    f"{self.count} 回 / "
                     f"待機 {recorder.format_seconds(self.wait)} s")
         return f"{self.current:.3f} A"
 
@@ -127,7 +129,7 @@ class DischargeSession:
         self.phase_deadline: float | None = None  # 前休止・後休止が終わる時刻（time.monotonic）
         self.load_on_elapsed: float | None = None   # 前休止のあと負荷を ON にした経過時間 [s]
         self.load_off_elapsed: float | None = None  # 後休止の前に負荷を OFF にした経過時間 [s]
-        self.step = 1                                # 連続半減の何回目か（CC・CP は 1 のまま）
+        self.step = 1                                # 連続放電の何回目か（CC・CP は 1 のまま）
         self.step_current: float | None = conditions.current  # いまの回の電流 [A]
         self._marks: list[float] = []         # 負荷を ON・OFF にした経過時間 [s]（グラフの縦線）
         self._step_starts: list[float] = []   # 各回の放電を始めたときの放電容量 [mAh]（各回の容量を出すため）
@@ -175,34 +177,34 @@ class DischargeSession:
         rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage, "power": c.power}
         if r is None or r.discarded:
             return plotting.png_title_lines(self.base_name, c.model, self._title_current, c.cutoff, **rest,
-                                            extra=self._half_lines(False))
+                                            extra=self._series_lines(False))
         return plotting.png_title_lines(self.base_name, c.model, self._title_current, c.cutoff, r.mah, r.wh,
-                                        r.end_reason, **rest, extra=self._half_lines(True))
+                                        r.end_reason, **rest, extra=self._series_lines(True))
 
     def markers(self) -> list[float]:
-        """グラフに縦線を引く経過時間 [s]（オフセット・連続半減の待機で、負荷を ON・OFF にした時刻）"""
+        """グラフに縦線を引く経過時間 [s]（オフセット・連続放電の待機で、負荷を ON・OFF にした時刻）"""
         return list(self._marks)
 
     @property
     def step_mah(self) -> list[float]:
-        """連続半減の各回の放電容量 [mAh]（放電を始めた回の分。途中で止めた回はそこまで）"""
+        """連続放電の各回の放電容量 [mAh]（放電を始めた回の分。途中で止めた回はそこまで）"""
         starts = self._step_starts
         ends = starts[1:] + [self._integrator.mah]
         return [e - s for s, e in zip(starts, ends)]
 
     @property
     def _title_current(self) -> float | None:
-        """PNG タイトル 2 行目の放電電流（連続半減は初期電流を連続半減の行に書くので出さない）"""
-        return None if self.cond.mode == MODE_HALF else self.cond.current
+        """PNG タイトル 2 行目の放電電流（連続放電は初期電流を連続放電の行に書くので出さない）"""
+        return None if self.cond.mode == MODE_SERIES else self.cond.current
 
-    def _half_lines(self, finished: bool) -> list[str]:
-        """PNG のタイトルに足す連続半減の行（設定と、完了後は各回の放電容量）"""
+    def _series_lines(self, finished: bool) -> list[str]:
+        """PNG のタイトルに足す連続放電の行（設定と、完了後は各回の放電容量）"""
         c = self.cond
-        if c.mode != MODE_HALF:
+        if c.mode != MODE_SERIES:
             return []
         currents = ", ".join(recorder.format_current(i) for i in c.currents)
-        lines = [f"{recorder.HALF_NAME}放電: 初期電流 {c.current:.3f} A / {c.count} 回 / "
-                 f"待機 {recorder.format_seconds(c.wait)} s / 各回の電流 {currents} A"]
+        lines = [f"{recorder.SERIES_NAME}: 初期電流 {c.current:.3f} A / 倍率 {recorder.format_ratio(c.ratio)} / "
+                 f"{c.count} 回 / 待機 {recorder.format_seconds(c.wait)} s / 各回の電流 {currents} A"]
         if finished and self._step_starts:
             lines.append("各回の放電容量: " + " / ".join(f"{m:.1f}" for m in self.step_mah) + " mAh")
         return lines
@@ -353,7 +355,7 @@ class DischargeSession:
             mah, wh = self._integrator.add(elapsed, m.current, m.power)
         else:  # 放電容量・電力量は放電の区間だけで数える
             mah, wh = self._integrator.mah, self._integrator.wh
-        step = self.step if self.cond.mode == MODE_HALF and phase in (PHASE_DISCHARGE, PHASE_WAIT) else 0
+        step = self.step if self.cond.mode == MODE_SERIES and phase in (PHASE_DISCHARGE, PHASE_WAIT) else 0
         sample = Sample(timestamp, elapsed, m.voltage, m.current, m.power, mah, wh,
                         m.voltage_text, m.current_text, m.power_text, phase, step)
         self._writer.append(sample)  # OSError は呼び出し側で処理
@@ -387,7 +389,7 @@ class DischargeSession:
         next_t = self.start_monotonic + c.interval
         while True:
             if self.phase == PHASE_DISCHARGE and below >= CUTOFF_CONSECUTIVE:
-                if c.mode == MODE_HALF and self.step < c.count:
+                if c.mode == MODE_SERIES and self.step < c.count:
                     if not self._begin_wait():
                         return
                     below = 0
@@ -466,7 +468,7 @@ class DischargeSession:
 
     def _begin_discharge(self) -> bool:
         """前休止・待機の終わり：負荷 ON の直前の電圧を記録してから負荷を ON にし、直後の電圧も記録する。
-        待機のあと（連続半減）は、次の回の電流（半分）にしてから ON にする。終了したら False"""
+        待機のあと（連続放電）は、次の回の電流（倍率をかけた値）にしてから ON にする。終了したら False"""
         if self._sample() == "done":
             return False
         after_wait = self.phase == PHASE_WAIT
@@ -497,7 +499,7 @@ class DischargeSession:
         return self._sample() != "done"
 
     def _begin_wait(self) -> bool:
-        """連続半減で終止電圧に到達（最後の回でない）：負荷を OFF にして待機に入り、OFF 直後の電圧を記録する。
+        """連続放電で終止電圧に到達（最後の回でない）：負荷を OFF にして待機に入り、OFF 直後の電圧を記録する。
         Von はそのまま（次の回でも使う）。終了したら False"""
         if not self.client.load_off_safely():
             self._finish(END_REASON_ERROR, save=True, error="負荷を OFF にできなかったため停止しました")
@@ -608,8 +610,8 @@ class DischargeSession:
                         idn=self.client.idn, note=self.note, number=c.number, pre_rest=c.pre_rest,
                         post_rest=c.post_rest, pre_voltage=self.pre_voltage, post_voltage=self.post_voltage,
                         mode=c.mode, power=c.power)
-        if c.mode == MODE_HALF:
-            info.wait, info.count = c.wait, c.count
+        if c.mode == MODE_SERIES:
+            info.ratio, info.wait, info.count = c.ratio, c.wait, c.count
             info.step_currents = tuple(c.currents[:len(self._step_starts)])
             info.step_mah = tuple(self.step_mah)
         partial = self.paths["partial"]
@@ -633,7 +635,7 @@ class DischargeSession:
             rest = {"pre_voltage": self.pre_voltage, "post_voltage": self.post_voltage, "power": c.power}
             lines = plotting.png_title_lines(paths["csv"].stem, c.model, self._title_current, c.cutoff,
                                              result.mah, result.wh, result.end_reason, **rest,
-                                             extra=self._half_lines(True))
+                                             extra=self._series_lines(True))
             plotting.render_png(paths["png"], t, v, lower, c.cutoff, c.setpoint, lines, markers=self.markers(),
                                 lower=c.lower_graph)
             result.png_path = paths["png"]

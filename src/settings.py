@@ -1,6 +1,6 @@
 """設定ファイル（sdl_logger_settings.json）の読み書き
 
-保存する項目: IP、ポート、保存先フォルダ、放電モード、放電電流、放電電力、連続半減の待機・回数、終止電圧、取得周期、
+保存する項目: IP、ポート、保存先フォルダ、放電モード、放電電流、放電電力、連続放電の倍率・待機・回数、終止電圧、取得周期、
 オプション（測定中継続表示・測定終了音・オフセット）。
 メーカー・満充電電圧・型番・備考は保存しない（前回の値が残って誤記録になるのを防ぐ）。
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 import paths
-from recorder import MODE_CC, MODES
+from recorder import DEFAULT_RATIO, MODE_CC, MODE_SERIES, MODES
 
 log = logging.getLogger("sdl.settings")
 
@@ -24,9 +24,10 @@ CURRENT_RANGE = (0.001, 5.000)
 POWER_RANGE = (0.001, 20.000)   # CP モードの放電電力 [W]
 CUTOFF_RANGE = (2.000, 4.200)
 INTERVAL_RANGE = (0.2, 60.0)
-REST_RANGE = (0.0, 7200.0)
-WAIT_RANGE = (0.0, 7200.0)  # 連続半減の待機 [s]
-COUNT_RANGE = (2, 20)       # 連続半減の放電回数（最後の回の電流が 1 mA 以上になるかは別に確かめる）  # オフセット（放電前・放電後に負荷 OFF のまま電圧を記録する時間）[s]
+REST_RANGE = (0.0, 7200.0)  # オフセット（放電前・放電後に負荷 OFF のまま電圧を記録する時間）[s]
+WAIT_RANGE = (0.0, 7200.0)  # 連続放電の待機 [s]
+COUNT_RANGE = (2, 20)       # 連続放電の放電回数（最後の回の電流が 1 mA 以上になるかは別に確かめる）
+RATIO_RANGE = (0.01, 1.0)   # 連続放電で、次の回の電流にかける倍率（1 より大きくはできない）
 PORT_RANGE = (1, 65535)
 
 
@@ -45,8 +46,9 @@ class Settings:
     rest: bool = False       # オフセットを設定する（チェックしたときだけ下の秒数を使う）
     pre_rest: float = 0.0    # オフセット 放電前 [s]
     post_rest: float = 0.0   # オフセット 放電後 [s]
-    wait: float = 600.0      # 連続半減の待機 [s]
-    count: int = 4           # 連続半減の放電回数
+    wait: float = 600.0      # 連続放電の待機 [s]
+    count: int = 4           # 連続放電の放電回数
+    ratio: float = DEFAULT_RATIO  # 連続放電で、次の回の電流にかける倍率
 
 
 def _in_range(value, lo, hi) -> bool:
@@ -74,6 +76,8 @@ def load(path: Path | None = None) -> Settings:
         s.folder = data["folder"]
     if data.get("mode") in MODES:
         s.mode = data["mode"]
+    elif data.get("mode") == "HALF":  # v1.2.0 の「連続半減」は今の連続放電
+        s.mode = MODE_SERIES
     for name, rng in (("current", CURRENT_RANGE), ("power", POWER_RANGE), ("cutoff", CUTOFF_RANGE), ("interval", INTERVAL_RANGE),
                       ("pre_rest", REST_RANGE), ("post_rest", REST_RANGE)):
         if _in_range(data.get(name), *rng):
@@ -82,6 +86,8 @@ def load(path: Path | None = None) -> Settings:
         s.wait = float(data["wait"])
     if isinstance(data.get("count"), int) and _in_range(data["count"], *COUNT_RANGE):
         s.count = data["count"]
+    if _in_range(data.get("ratio"), *RATIO_RANGE):
+        s.ratio = float(data["ratio"])
     for name in ("keep_awake", "sound", "rest"):
         if isinstance(data.get(name), bool):
             setattr(s, name, data[name])

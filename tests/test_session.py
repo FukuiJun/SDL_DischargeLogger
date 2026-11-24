@@ -506,13 +506,13 @@ def test_pre_and_post_rest_title_lines(fake, tmp_path):
     assert last == f"放電前電圧: {s.pre_voltage:.3f} V / 放電後電圧: {s.post_voltage:.3f} V"
 
 
-def test_half_mode_halves_current_after_wait(fake, tmp_path):
-    """連続半減：終止電圧で負荷 OFF → 待機 → 電流を半分にして次の回。設定した回数で終わり、各回の容量を残す"""
+def test_series_mode_halves_current_after_wait(fake, tmp_path):
+    """連続放電：終止電圧で負荷 OFF → 待機 → 電流を半分にして次の回。設定した回数で終わり、各回の容量を残す"""
     cond = Conditions(maker="Panasonic", full_voltage=None, model="", current=1.0, cutoff=3.0, interval=0.1,
-                      mode="HALF", wait=0.4, count=3, von=2.9)
+                      mode="SERIES", wait=0.4, count=3, von=2.9)
     s = make_session(fake, tmp_path, cond)
     s.start()
-    assert s.base_name.endswith("_SDL_1000mA_3000mV_pa_連続半減") and s.run_dir.name == s.base_name
+    assert s.base_name.endswith("_SDL_1000mA_3000mV_pa_連続放電") and s.run_dir.name == s.base_name
     phases = []
     end = time.monotonic() + 20
     while not s.finished and time.monotonic() < end:
@@ -537,7 +537,7 @@ def test_half_mode_halves_current_after_wait(fake, tmp_path):
     assert sum(mah) == pytest.approx(result.mah)
     rows = list(csv.reader(result.csv_path.read_text(encoding="utf-8-sig").splitlines()))
     d = {r[0]: r[1:] for r in rows if r}
-    assert d["放電モード"] == ["連続半減"] and d["放電回数"] == ["3"] and d["待機[s]"] == ["0.4"]
+    assert d["放電モード"] == ["連続放電"] and d["放電回数"] == ["3"] and d["待機[s]"] == ["0.4"]
     assert d["各回の電流[A]"] == ["1.000", "0.500", "0.250"]
     assert len(d["各回の放電容量[mAh]"]) == 3
     head = rows.index(["日時", "経過時間[s]", "電圧[V]", "電流[A]", "電力[W]", "放電容量[mAh]", "電力量[Wh]", "区間"])
@@ -554,9 +554,9 @@ def test_half_mode_halves_current_after_wait(fake, tmp_path):
     assert "各回の放電容量" in s.title_lines()[-1]
 
 
-def test_half_mode_manual_stop_during_wait(fake, tmp_path):
-    """連続半減の待機中に止めると手動停止（保存待ち）。止めるまでの回の容量が残る"""
-    cond = Conditions(None, None, "", 1.0, 3.0, 0.1, mode="HALF", wait=30.0, count=4)
+def test_series_mode_manual_stop_during_wait(fake, tmp_path):
+    """連続放電の待機中に止めると手動停止（保存待ち）。止めるまでの回の容量が残る"""
+    cond = Conditions(None, None, "", 1.0, 3.0, 0.1, mode="SERIES", wait=30.0, count=4)
     s = make_session(fake, tmp_path, cond)
     s.start()
     time.sleep(0.3)
